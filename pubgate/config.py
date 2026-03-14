@@ -116,6 +116,10 @@ class Config:
     def public_main_ref(self) -> str:
         return f"{self.public_remote}/{self.public_main_branch}"
 
+    @property
+    def state_files(self) -> frozenset[str]:
+        return frozenset({self.absorb_state_file, self.stage_state_file})
+
 
 # ---------------------------------------------------------------------------
 # TOML loader

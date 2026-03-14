@@ -223,6 +223,20 @@ class GitRepo:
                 entries.append(CommitInfo(sha=parts[0], subject=parts[1], author=parts[2], date=date_str))
         return entries
 
+    def find_commit_introducing(self, base: str, head: str, path: str, content: str) -> str | None:
+        """Find the oldest commit in base..head that changed *path* w.r.t. *content*."""
+        result = self._run(
+            "log",
+            "--reverse",
+            "--format=%H",
+            f"-S{content}",
+            f"{base}..{head}",
+            "--",
+            path,
+        )
+        first_line = result.stdout.strip().split("\n", 1)[0]
+        return first_line if first_line else None
+
     def changed_files_in_commit(self, sha: str) -> list[str]:
         result = self._run("diff-tree", "--no-commit-id", "-r", "--name-only", f"{sha}~1", sha)
         return [f for f in result.stdout.strip().splitlines() if f]
