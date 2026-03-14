@@ -93,8 +93,8 @@ class PubGate:
             last_absorbed[:7],
             public_head[:7],
         )
-        for sha, subject in public_commits:
-            logger.info("  %s %s", sha[:7], subject)
+        for i, c in enumerate(public_commits, 1):
+            logger.info("  %d. %s (%s, %s, %s)", i, c.subject, c.sha[:7], c.author, c.date)
         state_files = frozenset({cfg.absorb_state_file, cfg.stage_state_file})
         changes = git.diff_tree(last_absorbed, public_head)
         changes = [c for c in changes if c.path not in state_files]
@@ -186,8 +186,8 @@ class PubGate:
                 prev_sha[:7],
                 main_head[:7],
             )
-            for sha, subject in internal_commits:
-                logger.info("  %s %s", sha[:7], subject)
+            for i, c in enumerate(internal_commits, 1):
+                logger.info("  %d. %s (%s, %s, %s)", i, c.subject, c.sha[:7], c.author, c.date)
         else:
             logger.info("Staging changes into public-preview")
 
@@ -297,8 +297,8 @@ class PubGate:
                 prev_published[:7],
                 main_sha[:7],
             )
-            for sha, subject in staged_commits:
-                logger.info("  %s %s", sha[:7], subject)
+            for i, c in enumerate(staged_commits, 1):
+                logger.info("  %d. %s (%s, %s, %s)", i, c.subject, c.sha[:7], c.author, c.date)
         else:
             logger.info("Publishing staged content to %s", cfg.public_remote)
 
@@ -530,8 +530,8 @@ class PubGate:
         lines = [subject]
         if commits:
             lines.append("")
-            for sha, msg in commits:
-                lines.append(f"  {sha[:7]} {msg}")
+            for c in commits:
+                lines.append(f"  {c.sha[:7]} {c.subject}")
         if conflicted:
             lines.append("")
             lines.append("CONFLICTS (resolve before merging):")
@@ -556,8 +556,8 @@ class PubGate:
         if not commits:
             return subject
         lines = [subject, ""]
-        for sha, msg in commits:
-            lines.append(f"  {sha[:7]} {msg}")
+        for c in commits:
+            lines.append(f"  {c.sha[:7]} {c.subject}")
         return "\n".join(lines)
 
     def _build_stage_snapshot(self, ignore_patterns: list[str]) -> dict[str, str | bytes]:

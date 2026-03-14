@@ -1,6 +1,14 @@
 from dataclasses import dataclass
 
-__all__ = ["FileChange"]
+__all__ = ["CommitInfo", "FileChange"]
+
+
+@dataclass(frozen=True, slots=True)
+class CommitInfo:
+    sha: str
+    subject: str
+    author: str
+    date: str
 
 
 @dataclass(frozen=True, slots=True)
