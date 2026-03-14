@@ -46,6 +46,22 @@ class TestAbsorbChanges:
         assert content is not None
         assert "new content" in content
 
+    def test_new_file_preserves_local_when_exists(self, topo: Topology, caplog):
+        """File added on public that already exists locally is kept, not overwritten."""
+        topo.bootstrap_absorb()
+        # Add a file to internal that doesn't exist on public yet
+        topo.commit_internal({"shared.txt": "internal version with secrets\n"})
+        # Add the same file on the public side
+        topo.commit_to_public({"shared.txt": "public version\n"})
+        with caplog.at_level(logging.INFO, logger="pubgate"):
+            topo.pubgate.absorb()
+        assert "kept local version" in caplog.text
+        # Local version must be preserved
+        content = topo.work_dir.read_file_at_ref(topo.cfg.inbound_pr_branch, "shared.txt")
+        assert content is not None
+        assert "internal version with secrets" in content
+        assert "public version" not in content
+
     def test_modified_file(self, topo: Topology):
         topo.bootstrap_absorb()
         topo.commit_to_public({"public-file.txt": "updated content\n"})

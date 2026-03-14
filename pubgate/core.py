@@ -346,8 +346,8 @@ class PubGate:
             logger.debug("No previous snapshot to compare against")
             return not snapshot
 
-        prev_files = set(git.ls_tree(compare_ref)) - {cfg.outbound_state_file}
-        new_files = set(snapshot.keys())
+        prev_files = set(git.ls_tree(compare_ref)) - {cfg.outbound_state_file, cfg.inbound_state_file}
+        new_files = set(snapshot.keys()) - {cfg.inbound_state_file}
         if prev_files != new_files:
             return False
 

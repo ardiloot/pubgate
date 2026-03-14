@@ -23,8 +23,12 @@ def apply_inbound_changes(
     for change in changes:
         logger.debug("Processing change: %s %s", change.status, change.path)
         if change.is_add:
-            is_binary = git.copy_file_from_ref(public_ref, change.path)
-            actions.append(f"  add{' (binary)' if is_binary else ''}: {change.path}")
+            local_path = git.repo_dir / change.path
+            if local_path.exists():
+                actions.append(f"  added on public (kept local version, review manually): {change.path}")
+            else:
+                is_binary = git.copy_file_from_ref(public_ref, change.path)
+                actions.append(f"  add{' (binary)' if is_binary else ''}: {change.path}")
 
         elif change.is_modify:
             _merge_file(git, base_sha, public_ref, change.path, actions)

@@ -88,6 +88,36 @@ class TestPublishFullCycle:
         # Stage should still work
         topo.pubgate.stage()
 
+    def test_absorb_after_publish_preserves_internal_blocks(self, topo: Topology):
+        """BEGIN-INTERNAL blocks survive a full publish → absorb round-trip."""
+        internal_content = "public line\n# BEGIN-INTERNAL\nsecret()\n# END-INTERNAL\npublic end\n"
+        topo.commit_internal({"app.py": internal_content})
+
+        topo.stage_and_merge()
+
+        # Verify staging stripped the internal block
+        staged = topo.work_dir.read_file_at_ref(f"origin/{topo.cfg.internal_preview_branch}", "app.py")
+        assert staged is not None
+        assert "BEGIN-INTERNAL" not in staged
+        assert "secret()" not in staged
+
+        topo.pubgate.publish()
+
+        # Merge the public PR
+        topo.work_dir.run("fetch", "public-remote")
+        topo.merge_public_pr(topo.cfg.public_pr_branch, "main")
+
+        # Absorb after publish must preserve internal blocks
+        topo.work_dir.run("checkout", "main")
+        topo.pubgate.absorb()
+
+        absorbed = topo.work_dir.read_file_at_ref(topo.cfg.inbound_pr_branch, "app.py")
+        assert absorbed is not None
+        assert "BEGIN-INTERNAL" in absorbed
+        assert "secret()" in absorbed
+        assert "public line" in absorbed
+        assert "public end" in absorbed
+
 
 class TestPublishBinary:
     def test_binary_file_published_intact(self, topo: Topology):

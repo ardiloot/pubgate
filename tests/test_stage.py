@@ -230,3 +230,46 @@ class TestStageBranchGuard:
         topo.pubgate.stage(force=True)
         files = topo.work_dir.list_files_at_ref(topo.cfg.outbound_pr_branch)
         assert "new.txt" in files
+
+
+class TestStageSkipsStateOnly:
+    def test_skips_when_only_inbound_state_changed(self, topo: Topology, caplog):
+        """Stage should skip when the only difference is .pubgate-state-inbound."""
+        topo.stage_and_merge()
+        topo.pubgate.publish()
+
+        # Merge the public PR
+        topo.work_dir.run("fetch", "public-remote")
+        topo.merge_public_pr(topo.cfg.public_pr_branch, "main")
+
+        # Absorb catches up (updates .pubgate-state-inbound)
+        topo.work_dir.run("checkout", "main")
+        topo.pubgate.absorb()
+        topo.merge_internal_pr(topo.cfg.inbound_pr_branch, "main")
+
+        # Stage should see no content changes and skip
+        with caplog.at_level(logging.INFO, logger="pubgate"):
+            topo.pubgate.stage()
+        assert "No changes to stage" in caplog.text
+
+    def test_proceeds_when_state_and_content_changed(self, topo: Topology):
+        """Stage should proceed when content changes accompany state changes."""
+        topo.stage_and_merge()
+        topo.pubgate.publish()
+
+        # Merge the public PR
+        topo.work_dir.run("fetch", "public-remote")
+        topo.merge_public_pr(topo.cfg.public_pr_branch, "main")
+
+        # Absorb catches up
+        topo.work_dir.run("checkout", "main")
+        topo.pubgate.absorb()
+        topo.merge_internal_pr(topo.cfg.inbound_pr_branch, "main")
+
+        # Make a real content change
+        topo.commit_internal({"new-feature.txt": "feature code\n"})
+
+        # Stage should proceed (content changed, not just state)
+        topo.pubgate.stage()
+        files = topo.work_dir.list_files_at_ref(topo.cfg.outbound_pr_branch)
+        assert "new-feature.txt" in files
