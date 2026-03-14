@@ -102,11 +102,12 @@ class PubGate:
             logger.info("No file changes detected (metadata-only commits?). Updating tracking")
 
         if dry_run:
-            logger.info("[dry-run] Planned actions:")
+            logger.info("[dry-run] Changes (base %s):", last_absorbed[:7])
             if changes:
                 for c in changes:
                     logger.info("  %s: %s", c.status, c.path)
-            logger.info("  update %s → %s", cfg.absorb_state_file, public_head[:7])
+            else:
+                logger.info("  (no file changes)")
             return
 
         def _absorb_work() -> bool:
@@ -152,19 +153,6 @@ class PubGate:
             logger.info("No changes to stage (public-preview is already up to date)")
             return
 
-        if dry_run:
-            state_files = {cfg.absorb_state_file, cfg.stage_state_file}
-            user_files = sorted(p for p in snapshot if p not in state_files)
-            logger.info("[dry-run] Would stage %d file(s) from main (%s) into public", len(user_files), main_head[:7])
-            if ignore_patterns:
-                logger.debug("  Ignore patterns: %s", ignore_patterns)
-            for path in user_files:
-                logger.info("  %s", path)
-            logger.info("  %s → %s", cfg.stage_state_file, main_head[:7])
-            return
-
-        self._ensure_public_branch()
-
         prev_state = git.read_file_at_ref(origin_preview_ref, cfg.stage_state_file)
         if prev_state is not None:
             try:
@@ -187,6 +175,16 @@ class PubGate:
                 logger.info("  %s %s", sha[:7], subject)
         else:
             logger.info("Staging changes into public-preview")
+
+        if dry_run:
+            state_files = {cfg.absorb_state_file, cfg.stage_state_file}
+            user_files = sorted(p for p in snapshot if p not in state_files)
+            logger.info("[dry-run] Would stage %d file(s):", len(user_files))
+            for path in user_files:
+                logger.info("  %s", path)
+            return
+
+        self._ensure_public_branch()
 
         def _stage_work() -> bool:
             existing = git.ls_tree("HEAD")
@@ -220,7 +218,7 @@ class PubGate:
             logger.info("Next steps:")
             logger.info("  1. Create PR '%s → %s' on your git host", cfg.stage_pr_branch, cfg.internal_preview_branch)
             logger.info("  2. Review and merge the PR")
-            logger.info("  3. Run 'pubgate publish'")
+            logger.info("  3. Run 'pubgate publish' (if ready)")
 
     def publish(self, *, dry_run: bool = False, force: bool = False) -> None:
         cfg, git = self.cfg, self.git
@@ -262,16 +260,6 @@ class PubGate:
         # Build commit on top of absorbed commit with content from origin/public-preview
         public_files = git.ls_tree(origin_preview_ref)
 
-        if dry_run:
-            state_files = {cfg.absorb_state_file, cfg.stage_state_file}
-            user_files = sorted(p for p in public_files if p not in state_files)
-            logger.info("[dry-run] Would publish %d file(s) to %s", len(user_files), cfg.public_remote)
-            logger.info("  Outbound state: %s", main_sha[:7])
-            logger.info("  Base (absorbed): %s", absorbed_sha[:7])
-            for path in user_files:
-                logger.info("  %s", path)
-            return
-
         # Log commits being published
         remote_stage_state_val = git.read_file_at_ref(public_main, cfg.stage_state_file)
         if remote_stage_state_val is not None:
@@ -295,6 +283,14 @@ class PubGate:
                 logger.info("  %s %s", sha[:7], subject)
         else:
             logger.info("Publishing staged content to %s", cfg.public_remote)
+
+        if dry_run:
+            state_files = {cfg.absorb_state_file, cfg.stage_state_file}
+            user_files = sorted(p for p in public_files if p not in state_files)
+            logger.info("[dry-run] Would publish %d file(s) to %s:", len(user_files), cfg.public_remote)
+            for path in user_files:
+                logger.info("  %s", path)
+            return
 
         def _publish_work() -> bool:
             existing = git.ls_tree("HEAD")
