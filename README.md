@@ -1,5 +1,8 @@
 # pubgate
 
+[![Pre-commit](https://github.com/ardiloot/pubgate/actions/workflows/pre-commit.yml/badge.svg)](https://github.com/ardiloot/pubgate/actions/workflows/pre-commit.yml)
+[![Pytest](https://github.com/ardiloot/pubgate/actions/workflows/pytest.yml/badge.svg)](https://github.com/ardiloot/pubgate/actions/workflows/pytest.yml)
+
 Safe bidirectional sync between internal and public git repos.
 
 ## The Problem
