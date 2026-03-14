@@ -134,7 +134,7 @@ class PubGate:
         snapshot = self._build_outbound_snapshot(ignore_patterns)
 
         if self._is_snapshot_unchanged(snapshot):
-            logger.info("No changes to stage (public is already up to date)")
+            logger.info("No changes to stage (public-preview is already up to date)")
             return
 
         if dry_run:
@@ -162,7 +162,7 @@ class PubGate:
             git.write_file_and_stage(cfg.outbound_state_file, main_head + "\n")
 
             if not git.has_staged_changes():
-                logger.info("No changes to stage (public is already up to date)")
+                logger.info("No changes to stage (public-preview is already up to date)")
                 return False
 
             msg = self._stage_commit_message(main_head, origin_preview_ref)
@@ -410,7 +410,7 @@ class PubGate:
         self.git.push(local_branch, remote, remote_branch, force=force)
 
     def _report_pr(self, head: str, base: str, title: str) -> None:
-        logger.info("Create/update PR: %s → %s | %s", head, base, title)
+        logger.info("Next step: create PR '%s → %s' on your git host | %s", head, base, title)
 
     def _prune_internal_pr_branches(self) -> None:
         cfg, git = self.cfg, self.git
