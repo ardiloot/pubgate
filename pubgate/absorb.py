@@ -8,7 +8,7 @@ from .git import GitRepo
 logger = logging.getLogger(__name__)
 
 
-def apply_inbound_changes(
+def apply_absorb_changes(
     git: GitRepo,
     base_sha: str,
     public_head: str,

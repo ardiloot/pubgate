@@ -17,7 +17,7 @@ You have an internal repo with proprietary code and you want to open-source part
 
 pubgate prepares branches for review. You create and merge PRs on your git host (GitHub, GitLab, etc.). It handles both directions:
 
-- Stage outbound changes behind an internal leak-review PR gate
+- Stage changes behind an internal leak-review PR gate
 - Push reviewed content to a PR branch on the public repo
 - Absorb public contributions back into internal main with three-way merge
 
@@ -35,9 +35,9 @@ The two workflows:
 %%{init: {"flowchart": {"useMaxWidth": false, "nodeSpacing": 25, "rankSpacing": 30, "padding": 10}}}%%
 flowchart TD
     A["🔒 main (internal)"]
-    A -->|"stage"| B["🔒 pubgate/outbound (internal)"]
+    A -->|"stage"| B["🔒 pubgate/stage (internal)"]
     B -->|"PR · leak review"| C["🔒 public-preview (internal)"]
-    C ==>|"publish"| D["🌐 pubgate/sync (public)"]
+    C ==>|"publish"| D["🌐 pubgate/publish (public)"]
     D -->|"PR · publish check"| E["🌐 main (public)"]
 
     style A fill:#2d5a2d,stroke:#4a4,color:#fff
@@ -54,7 +54,7 @@ flowchart TD
 %%{init: {"flowchart": {"useMaxWidth": false, "nodeSpacing": 25, "rankSpacing": 30, "padding": 10}}}%%
 flowchart TD
     E2["🌐 main (public)"]
-    E2 -->|"absorb"| F["🔒 pubgate/inbound (internal)"]
+    E2 -->|"absorb"| F["🔒 pubgate/absorb (internal)"]
     F -->|"PR · merge review"| A2["🔒 main (internal)"]
 
     style E2 fill:#2d3a5a,stroke:#48f,color:#fff
@@ -108,7 +108,7 @@ flowchart TD
    ```bash
    pubgate absorb
    ```
-   On first run, this records the current public repo HEAD as the starting point for future syncs. It creates a PR branch that records this baseline in a tracking file (`.pubgate-state-inbound`). Create a PR from that branch into `main` on your git host and merge it.
+   On first run, this records the current public repo HEAD as the starting point for future syncs. It creates a PR branch that records this baseline in a tracking file (`.pubgate-state-absorb`). Create a PR from that branch into `main` on your git host and merge it.
 
 ## Workflow
 
@@ -116,18 +116,18 @@ flowchart TD
 
 pubgate prepares branches for review but does not create PRs. You create and merge them on your git host. After merging changes into internal `main` through your normal PR process:
 
-1. Recommended: run `pubgate absorb` if the public repo has unabsorbed changes, then merge the inbound PR. This isn't required (`stage` and `publish` proceed either way) but it keeps the public snapshot clean.
-2. Run `pubgate stage`. This creates a `pubgate/outbound` branch with the filtered snapshot for leak review.
-3. Create a PR from `pubgate/outbound` → `public-preview` on your git host. This is the leak-review gate. Review it to ensure no internal code is exposed. Merge when satisfied.
-4. Run `pubgate publish`. This delivers the reviewed content to the public repo as a `pubgate/sync` branch.
-5. Create a PR from `pubgate/sync` → `main` on the public repo. Merge after CI passes.
+1. Recommended: run `pubgate absorb` if the public repo has unabsorbed changes, then merge the absorb PR. This isn't required (`stage` and `publish` proceed either way) but it keeps the public snapshot clean.
+2. Run `pubgate stage`. This creates a `pubgate/stage` branch with the filtered snapshot for leak review.
+3. Create a PR from `pubgate/stage` → `public-preview` on your git host. This is the leak-review gate. Review it to ensure no internal code is exposed. Merge when satisfied.
+4. Run `pubgate publish`. This delivers the reviewed content to the public repo as a `pubgate/publish` branch.
+5. Create a PR from `pubgate/publish` → `main` on the public repo. Merge after CI passes.
 
 ### Incorporating public contributions: absorb
 
 Run when the public repo has external contributions that need to be brought into the internal repo.
 
-1. Run `pubgate absorb`. This creates a `pubgate/inbound` branch with the merged public changes for review.
-2. Create a PR from `pubgate/inbound` → `main` on your git host.
+1. Run `pubgate absorb`. This creates a `pubgate/absorb` branch with the merged public changes for review.
+2. Create a PR from `pubgate/absorb` → `main` on your git host.
 3. Resolve conflicts if any.
 4. Merge the PR.
 
@@ -137,18 +137,18 @@ Run when the public repo has external contributions that need to be brought into
 
 Making changes public (absorb → stage → publish):
 - **`main`** (internal): internal development branch (protected)
-- **`pubgate/outbound`** (internal): branch for leak review: filtered internal content → `public-preview`
-- **`public-preview`** (internal): holds reviewed outbound content; created automatically on first `stage` if it doesn't exist
-- **`pubgate/sync`** (public): branch for publish review: reviewed content → public `main`
+- **`pubgate/stage`** (internal): branch for leak review: filtered internal content → `public-preview`
+- **`public-preview`** (internal): holds reviewed staged content; created automatically on first `stage` if it doesn't exist
+- **`pubgate/publish`** (public): branch for publish review: reviewed content → public `main`
 - **`main`** (public): public-facing branch (protected)
 
 Incorporating public contributions (absorb):
-- **`pubgate/inbound`** (internal): branch for merge review: public changes → internal `main`
+- **`pubgate/absorb`** (internal): branch for merge review: public changes → internal `main`
 
 **State files**
 
-- `.pubgate-state-inbound` (on `main`): tracks which public commit was last absorbed
-- `.pubgate-state-outbound` (on `public-preview`): tracks which internal commit was last staged
+- `.pubgate-state-absorb` (on `main`): tracks which public commit was last absorbed
+- `.pubgate-state-stage` (on `public-preview`): tracks which internal commit was last staged
 
 Created and updated automatically.
 
@@ -181,15 +181,15 @@ internal_preview_branch = "public-preview"
 public_url = "https://github.com/you/public-repo.git"
 public_remote = "public-remote"
 public_main_branch = "main"
-public_pr_branch = "pubgate/sync"
+publish_pr_branch = "pubgate/publish"
 
 # Sync branches (internal repo)
-inbound_pr_branch = "pubgate/inbound"
-outbound_pr_branch = "pubgate/outbound"
+absorb_pr_branch = "pubgate/absorb"
+stage_pr_branch = "pubgate/stage"
 
 # State tracking
-inbound_state_file = ".pubgate-state-inbound"
-outbound_state_file = ".pubgate-state-outbound"
+absorb_state_file = ".pubgate-state-absorb"
+stage_state_file = ".pubgate-state-stage"
 
 # Filtering (fnmatch syntax; patterns match against both full path and basename)
 # These override the built-in defaults. Omit to use the defaults:
@@ -205,17 +205,17 @@ ignore = [
 
 ## Edge Cases
 
-- **Binary files**: included as-is in outbound snapshots (`BEGIN-INTERNAL` markers inside binaries are not processed); during absorb, binary modifications take the public version and are flagged for manual review.
+- **Binary files**: included as-is in staged snapshots (`BEGIN-INTERNAL` markers inside binaries are not processed); during absorb, binary modifications take the public version and are flagged for manual review.
 - **Renames on public repo**: the new path is copied in; the old file is kept locally and flagged for review.
 - **Deletions on public repo**: deleted files are kept locally and flagged for review in the absorb PR.
 - **Merge conflicts**: absorb uses three-way merge. Conflicts produce standard git conflict markers (`<<<<<<<`/`=======`/`>>>>>>>`) for manual resolution.
-- **Sync artifacts**: absorb excludes both state files (`.pubgate-state-inbound`, `.pubgate-state-outbound`) from the diff (they are sync artifacts, not external contributions). When only state files changed since the last absorb, the resulting PR only updates `.pubgate-state-inbound` (tracking-only).
-- **Empty files after scrubbing**: files that become empty after removing `BEGIN-INTERNAL` blocks are still included in the outbound snapshot.
-- **External contribution between stage and publish**: if someone pushes to the public repo after you stage but before you publish, `publish` still proceeds: it bases the public PR on the last absorbed commit, and git's three-way merge preserves external contributions or surfaces conflicts in the public PR. For a clean snapshot, run `absorb` → merge inbound PR → `stage` → merge outbound PR → `publish`.
+- **Sync artifacts**: absorb excludes both state files (`.pubgate-state-absorb`, `.pubgate-state-stage`) from the diff (they are sync artifacts, not external contributions). When only state files changed since the last absorb, the resulting PR only updates `.pubgate-state-absorb` (tracking-only).
+- **Empty files after scrubbing**: files that become empty after removing `BEGIN-INTERNAL` blocks are still included in the staged snapshot.
+- **External contribution between stage and publish**: if someone pushes to the public repo after you stage but before you publish, `publish` still proceeds: it bases the public PR on the last absorbed commit, and git's three-way merge preserves external contributions or surfaces conflicts in the public PR. For a clean snapshot, run `absorb` → merge absorb PR → `stage` → merge stage PR → `publish`.
 - **Stale branch cleanup**: after you merge a PR and its source branch is auto-deleted on the server, pubgate automatically prunes the stale local branch on the next run. No manual cleanup needed.
 - **Commit messages**: absorb commit messages list the public commits being absorbed (safe, they are already public). Stage commit messages list the internal commits since the last stage (safe, stays on the internal repo; useful context for the leak reviewer).
-- **Repeated publish without absorb**: if you publish multiple times without running `absorb` between cycles, each publish PR is based on the same absorbed commit. This produces a trivially resolvable merge conflict on `.pubgate-state-outbound` in the public PR (take the newer value). Running `absorb` between cycles avoids this.
-- **Do not edit the pubgate PR branch directly**: the `pubgate/sync` branch must only contain content produced by `publish`. Manual edits to this branch before merging will be silently overwritten by the next publish cycle (they are not detected as external contributions). If published content needs a fix, make the change in the internal repo and re-run `stage` → `publish`.
+- **Repeated publish without absorb**: if you publish multiple times without running `absorb` between cycles, each publish PR is based on the same absorbed commit. This produces a trivially resolvable merge conflict on `.pubgate-state-stage` in the public PR (take the newer value). Running `absorb` between cycles avoids this.
+- **Do not edit the pubgate PR branch directly**: the `pubgate/publish` branch must only contain content produced by `publish`. Manual edits to this branch before merging will be silently overwritten by the next publish cycle (they are not detected as external contributions). If published content needs a fix, make the change in the internal repo and re-run `stage` → `publish`.
 
 ## Troubleshooting
 
@@ -228,8 +228,8 @@ ignore = [
 | "behind" | Local `main` is behind origin | Run `git pull --rebase` |
 | "diverged" | Local `main` has diverged from origin | Reconcile manually (rebase or reset) |
 | "branch '...' already exists" | Previous PR not merged | Merge the PR, or use `--force` to overwrite |
-| "no inbound state found" | First run, or absorb not yet done | Run `pubgate absorb` to create initial baseline |
-| "no outbound state found" | Stage PR not merged | Run `pubgate stage` and merge the internal PR |
+| "no absorb state found" | First run, or absorb not yet done | Run `pubgate absorb` to create initial baseline |
+| "no stage state found" | Stage PR not merged | Run `pubgate stage` and merge the internal PR |
 | "has no 'main' branch" | Public repo is empty (no commits) | Push at least one commit to the public repo (e.g. add a README) |
 
 ## Example: Full First-Time Walkthrough
@@ -247,18 +247,18 @@ git add pubgate.toml && git commit -m "Add pubgate config" && git push
 
 # 3. Bootstrap - records the public repo's current HEAD as baseline
 pubgate absorb
-# Output: pushes pubgate/inbound branch
-# → Go to your git host, create PR: pubgate/inbound → main, merge it
+# Output: pushes pubgate/absorb branch
+# → Go to your git host, create PR: pubgate/absorb → main, merge it
 
-# 4. Stage outbound content (filters out internal files and scrubs markers)
+# 4. Stage staged content (filters out internal files and scrubs markers)
 pubgate stage
-# Output: pushes pubgate/outbound branch
-# → Create PR: pubgate/outbound → public-preview, review for leaks, merge it
+# Output: pushes pubgate/stage branch
+# → Create PR: pubgate/stage → public-preview, review for leaks, merge it
 
 # 5. Publish to public repo
 pubgate publish
-# Output: pushes pubgate/sync to the public remote
-# → Create PR: pubgate/sync → main on the public repo, merge it
+# Output: pushes pubgate/publish to the public remote
+# → Create PR: pubgate/publish → main on the public repo, merge it
 
 # Done! For future syncs: absorb (if needed) → stage → publish.
 ```

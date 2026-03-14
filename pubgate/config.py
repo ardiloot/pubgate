@@ -84,15 +84,15 @@ class Config:
     public_url: str | None = _config_field("str", default=None)
     public_remote: str = _config_field("str", default="public-remote")
     public_main_branch: str = _config_field("branch", scope="public", default="main")
-    public_pr_branch: str = _config_field("branch", scope="public", default="pubgate/sync")
+    publish_pr_branch: str = _config_field("branch", scope="public", default="pubgate/publish")
 
     # Sync branches (internal repo)
-    inbound_pr_branch: str = _config_field("branch", scope="internal", default="pubgate/inbound")
-    outbound_pr_branch: str = _config_field("branch", scope="internal", default="pubgate/outbound")
+    absorb_pr_branch: str = _config_field("branch", scope="internal", default="pubgate/absorb")
+    stage_pr_branch: str = _config_field("branch", scope="internal", default="pubgate/stage")
 
     # State tracking
-    inbound_state_file: str = _config_field("state", default=".pubgate-state-inbound")
-    outbound_state_file: str = _config_field("state", default=".pubgate-state-outbound")
+    absorb_state_file: str = _config_field("state", default=".pubgate-state-absorb")
+    stage_state_file: str = _config_field("state", default=".pubgate-state-stage")
 
     # Filtering
     ignore: list[str] = _config_field("list", default_factory=lambda: list(DEFAULT_IGNORE_PATTERNS))
