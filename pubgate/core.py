@@ -81,7 +81,17 @@ class PubGate:
         last_absorbed = result.last_absorbed
         assert last_absorbed is not None, f"Expected {cfg.absorb_state_file} to exist"
 
-        logger.info("Absorbing changes: %s..%s", last_absorbed[:7], public_head[:7])
+        public_commits = git.log_oneline(last_absorbed, public_head)
+        n = len(public_commits)
+        logger.info(
+            "Absorbing %d %s: %s..%s",
+            n,
+            "commit" if n == 1 else "commits",
+            last_absorbed[:7],
+            public_head[:7],
+        )
+        for sha, subject in public_commits:
+            logger.info("  %s %s", sha[:7], subject)
         state_files = frozenset({cfg.absorb_state_file, cfg.stage_state_file})
         changes = git.diff_tree(last_absorbed, public_head)
         changes = [c for c in changes if c.path not in state_files]
