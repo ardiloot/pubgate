@@ -66,6 +66,8 @@ class PubGate:
                 )
             logger.info("First-run bootstrap: recording %s HEAD (%s) as initial baseline", public_main, public_head[:7])
 
+            self._guard_branch_not_exists(cfg.absorb_pr_branch, force=force)
+
             if dry_run:
                 logger.info("[dry-run] Would create branch, write tracking file, and commit")
                 return
@@ -109,6 +111,8 @@ class PubGate:
         changes = [c for c in changes if c.path not in state_files]
         if not changes:
             logger.info("No file changes detected (metadata-only commits?). Updating tracking")
+
+        self._guard_branch_not_exists(cfg.absorb_pr_branch, force=force)
 
         if dry_run:
             logger.info("[dry-run] Changes (base %s):", last_absorbed[:7])
@@ -306,6 +310,8 @@ class PubGate:
             _log_commits(preview_commits)
         else:
             logger.info("Publishing to %s (no changes, base %s)", cfg.public_remote, publish_base[:7])
+
+        self._guard_branch_not_exists(cfg.publish_pr_branch, force=force)
 
         if dry_run:
             logger.info("[dry-run] Would commit on %s", cfg.publish_pr_branch)
