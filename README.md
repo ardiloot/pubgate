@@ -72,7 +72,7 @@ flowchart TD
 
 - Python 3.10+ and `git` CLI
 - An existing internal repo with an `origin` remote
-- An existing public repo (can be empty)
+- An existing public repo with at least one commit (e.g. a README created during repo setup)
 - A clean worktree on `main`, synced with `origin` (no uncommitted changes, no unpushed commits)
 
 ### Setup
@@ -83,7 +83,7 @@ flowchart TD
    ```
 2. Create `pubgate.toml` in repo root:
    ```toml
-   public_url = "git@github.com:you/public-repo.git"
+   public_url = "https://github.com/you/public-repo.git"
    ```
    Built-in ignore patterns cover common conventions (`.internal/*`, `*-internal.*`, `*.internal.*`, `*.secret`, etc.). To override them, set `ignore` explicitly (see [Configuration](#configuration)).
 3. Optionally, mark internal-only sections in files (in addition to ignore patterns, you can hide parts of individual files). Three comment styles are supported:
@@ -103,7 +103,8 @@ flowchart TD
    <!-- END-INTERNAL -->
    ```
    Markers must be properly paired. Nested, unclosed, or orphan `END-INTERNAL` markers cause an error. After scrubbing, a residual check catches any surviving markers that were not removed.
-4. Initialize tracking:
+4. Commit and push your changes to `main` (direct push or via PR). `pubgate absorb` requires a clean worktree synced with `origin`.
+5. Initialize tracking:
    ```bash
    pubgate absorb
    ```
@@ -177,7 +178,7 @@ internal_main_branch = "main"
 internal_preview_branch = "public-preview"
 
 # Public repo (public_url is required if the git remote isn't already configured)
-public_url = "git@github.com:you/public-repo.git"
+public_url = "https://github.com/you/public-repo.git"
 public_remote = "public-remote"
 public_main_branch = "main"
 public_pr_branch = "pubgate/sync"
@@ -229,6 +230,7 @@ ignore = [
 | "branch '...' already exists" | Previous PR not merged | Merge the PR, or use `--force` to overwrite |
 | "no inbound state found" | First run, or absorb not yet done | Run `pubgate absorb` to create initial baseline |
 | "no outbound state found" | Stage PR not merged | Run `pubgate stage` and merge the internal PR |
+| "has no 'main' branch" | Public repo is empty (no commits) | Push at least one commit to the public repo (e.g. add a README) |
 
 ## Example: Full First-Time Walkthrough
 
@@ -239,7 +241,7 @@ cd internal-repo
 
 # 2. Create pubgate.toml (built-in ignore patterns cover common conventions)
 cat > pubgate.toml << 'EOF'
-public_url = "git@github.com:you/public-repo.git"
+public_url = "https://github.com/you/public-repo.git"
 EOF
 git add pubgate.toml && git commit -m "Add pubgate config" && git push
 
