@@ -47,29 +47,27 @@ class TestAbsorbChanges:
         assert "new content" in content
 
     def test_new_file_preserves_local_when_exists(self, topo: Topology, caplog):
-        """File added on public that already exists locally triggers a merge."""
+        """File added on public that already exists locally (no publish cycle) — kept local."""
         topo.bootstrap_absorb()
         topo.commit_internal({"shared.txt": "local content\n"})
         topo.commit_to_public({"shared.txt": "public content\n"})
         with caplog.at_level(logging.INFO, logger="pubgate"):
             topo.pubgate.absorb()
-        # With no internal blocks, base == ours, so public version wins cleanly
-        assert "merge (clean)" in caplog.text
+        assert "kept local" in caplog.text
         content = topo.work_dir.read_file_at_ref(topo.cfg.absorb_pr_branch, "shared.txt")
         assert content is not None
-        assert "public content" in content
+        assert "local content" in content
 
     def test_new_file_merge_preserves_internal_blocks(self, topo: Topology, caplog):
         """File added on public that exists locally with BEGIN-INTERNAL blocks
-        gets a three-way merge that preserves internal blocks."""
+        (no publish cycle) — kept local with internal blocks."""
         topo.bootstrap_absorb()
         internal_content = "line1\n# BEGIN-INTERNAL\nsecret\n# END-INTERNAL\nline2\n"
         topo.commit_internal({"shared.txt": internal_content})
-        # Public version matches the filtered local (same as publish roundtrip)
         topo.commit_to_public({"shared.txt": "line1\nline2\n"})
         with caplog.at_level(logging.INFO, logger="pubgate"):
             topo.pubgate.absorb()
-        assert "merge (clean)" in caplog.text
+        assert "kept local" in caplog.text
         content = topo.work_dir.read_file_at_ref(topo.cfg.absorb_pr_branch, "shared.txt")
         assert content is not None
         assert "BEGIN-INTERNAL" in content
@@ -78,21 +76,19 @@ class TestAbsorbChanges:
         assert "line2" in content
 
     def test_new_file_merge_integrates_external_changes(self, topo: Topology, caplog):
-        """File added on public with external changes merges them while
-        preserving internal blocks."""
+        """File added on public with different content (no publish cycle)
+        — kept local, flagged for review."""
         topo.bootstrap_absorb()
         internal_content = "line1\n# BEGIN-INTERNAL\nsecret\n# END-INTERNAL\nline2\n"
         topo.commit_internal({"shared.txt": internal_content})
-        # Public version has an additional external change
         topo.commit_to_public({"shared.txt": "line1\nline2\nexternal addition\n"})
         with caplog.at_level(logging.INFO, logger="pubgate"):
             topo.pubgate.absorb()
-        assert "merge (clean)" in caplog.text
+        assert "kept local" in caplog.text
         content = topo.work_dir.read_file_at_ref(topo.cfg.absorb_pr_branch, "shared.txt")
         assert content is not None
         assert "BEGIN-INTERNAL" in content
         assert "secret" in content
-        assert "external addition" in content
 
     def test_modified_file(self, topo: Topology):
         topo.bootstrap_absorb()

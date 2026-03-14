@@ -112,7 +112,7 @@ class PubGate:
         def _absorb_work() -> bool:
             actions = self._apply_absorb_changes(last_absorbed, public_head)
             if actions:
-                logger.info("Changes:")
+                logger.info("Changes (base %s):", last_absorbed[:7])
             for a in actions:
                 if "review manually" in a or "CONFLICTS" in a:
                     logger.warning("%s", a)
@@ -491,9 +491,18 @@ class PubGate:
 
     def _apply_absorb_changes(self, base_sha: str, public_head: str) -> list[str]:
         cfg = self.cfg
+        git = self.git
         public_ref = f"{cfg.public_remote}/{cfg.public_main_branch}"
         excluded = frozenset({cfg.absorb_state_file, cfg.stage_state_file})
-        return apply_absorb_changes(self.git, base_sha, public_head, public_ref, excluded=excluded)
+        # Read the internal commit SHA that produced the current public content
+        stage_state = git.read_file_at_ref(public_ref, cfg.stage_state_file)
+        staged_sha: str | None = None
+        if stage_state is not None:
+            try:
+                staged_sha = validate_state_sha(stage_state, f"{public_ref}:{cfg.stage_state_file}")
+            except PubGateError:
+                pass
+        return apply_absorb_changes(git, base_sha, public_head, public_ref, excluded=excluded, staged_sha=staged_sha)
 
     def _absorb_commit_message(self, last_absorbed: str, public_head: str, conflicted: list[str] | None = None) -> str:
         subject = f"pubgate: absorb public changes {last_absorbed[:7]}..{public_head[:7]}"
