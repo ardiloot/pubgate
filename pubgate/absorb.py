@@ -85,9 +85,15 @@ def _merge_file(
 ) -> None:
     if git.is_binary_at_ref(public_ref, path) or git.is_binary_at_ref(base_sha, path):
         theirs_bytes = git.read_file_at_ref_bytes(public_ref, path)
-        if theirs_bytes is not None:
-            git.write_file_and_stage_bytes(path, theirs_bytes)
-            actions.append(f"  binary changed on public (replaced locally, review manually): {path}")
+        if theirs_bytes is None:
+            raise GitError(
+                ["show", f"{public_ref}:{path}"],
+                1,
+                f"diff_tree reported M for {path} but binary content is unreadable "
+                f"at {public_ref}. Repository may have corrupt objects.",
+            )
+        git.write_file_and_stage_bytes(path, theirs_bytes)
+        actions.append(f"  binary changed on public (replaced locally, review manually): {path}")
         return
 
     base_content = git.read_file_at_ref(base_sha, path)

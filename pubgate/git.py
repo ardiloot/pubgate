@@ -371,10 +371,14 @@ class GitRepo:
             content = self.read_file_at_ref_bytes(ref, path)
             if content is not None:
                 self.write_file_and_stage_bytes(path, content)
+            else:
+                logger.warning("Could not read binary file %s at %s (skipped)", path, ref)
             return True
         content = self.read_file_at_ref(ref, path)
         if content is not None:
             self.write_file_and_stage(path, content)
+        else:
+            logger.warning("Could not read file %s at %s (skipped)", path, ref)
         return False
 
     # ------------------------------------------------------------------

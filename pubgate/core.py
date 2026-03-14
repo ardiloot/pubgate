@@ -438,7 +438,7 @@ class PubGate:
             return "(empty)" if not snapshot else None
 
         prev_files = set(git.ls_tree(compare_ref)) - cfg.state_files
-        new_files = set(snapshot.keys()) - {cfg.absorb_state_file}
+        new_files = set(snapshot.keys()) - cfg.state_files
         if prev_files != new_files:
             return None
 
@@ -530,8 +530,8 @@ class PubGate:
             stage_ref = StateRef.read(git, public_ref, cfg.stage_state_file)
             if stage_ref is not None:
                 staged_sha = stage_ref.sha
-        except PubGateError:
-            pass
+        except PubGateError as exc:
+            logger.warning("Could not read stage state from %s: %s", public_ref, exc)
         return apply_absorb_changes(git, base_sha, public_head, public_ref, excluded=excluded, staged_sha=staged_sha)
 
     def _absorb_commit_message(self, last_absorbed: str, public_head: str, conflicted: list[str] | None = None) -> str:
