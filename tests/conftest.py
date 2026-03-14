@@ -278,3 +278,40 @@ def topo(tmp_path: Path) -> Topology:
         tmp_dir=tmp_path,
         cfg=Config(),
     )
+
+
+@pytest.fixture()
+def topo_empty_public(tmp_path: Path) -> Topology:
+    """Topology where the public repo has no commits (empty)."""
+    public_bare = tmp_path / "public.git"
+    internal_bare = tmp_path / "internal.git"
+    public_work = tmp_path / "public-work"
+    work_dir_path = tmp_path / "work"
+
+    # Create bare repos (servers) - public stays empty
+    _git(tmp_path, "init", "--bare", str(public_bare))
+    _git(tmp_path, "init", "--bare", str(internal_bare))
+
+    # Clone public but don't commit anything
+    _git(tmp_path, "clone", str(public_bare), str(public_work))
+
+    # Clone internal and set up developer work directory
+    _git(tmp_path, "clone", str(internal_bare), str(work_dir_path))
+    _git(work_dir_path, "checkout", "-b", "main")
+    (work_dir_path / "file1.txt").write_text("internal content\n", encoding="utf-8")
+    _git(work_dir_path, "add", ".")
+    _git(work_dir_path, "commit", "-m", "initial internal commit")
+    _git(work_dir_path, "push", "-u", "origin", "main")
+
+    # Add public repo as remote and fetch
+    _git(work_dir_path, "remote", "add", "public-remote", str(public_bare))
+    _git(work_dir_path, "fetch", "public-remote")
+
+    return Topology(
+        internal_server=GitServer(internal_bare),
+        public_server=GitServer(public_bare),
+        work_dir=WorkDirectory(work_dir_path),
+        external_contributor=WorkDirectory(public_work),
+        tmp_dir=tmp_path,
+        cfg=Config(),
+    )

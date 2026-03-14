@@ -7,6 +7,12 @@ from pubgate.errors import PubGateError
 from pubgate.git import GitRepo
 
 
+class TestAbsorbEmptyPublicRepo:
+    def test_errors_on_empty_public_repo(self, topo_empty_public: Topology):
+        with pytest.raises(PubGateError, match="no 'main' branch"):
+            topo_empty_public.pubgate.absorb()
+
+
 class TestAbsorbBootstrap:
     def test_creates_tracking_branch(self, topo: Topology):
         topo.bootstrap_absorb()

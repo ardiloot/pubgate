@@ -313,6 +313,11 @@ class PubGate:
 
     def _check_inbound(self) -> _InboundResult:
         cfg, git = self.cfg, self.git
+        if not git.remote_branch_exists(cfg.public_remote, cfg.public_main_branch):
+            raise PubGateError(
+                f"Error: public repo has no '{cfg.public_main_branch}' branch. "
+                f"The public repo must have at least one commit before running absorb."
+            )
         public_head = git.rev_parse(cfg.public_main_ref)
 
         inbound_state = git.read_file_at_ref(cfg.internal_main_branch, cfg.inbound_state_file)
