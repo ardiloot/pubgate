@@ -1,0 +1,62 @@
+[project]
+name = "pubgate"
+dynamic = ["version"]
+description = "Sync an internal repo with a public repo through reviewed PRs"
+readme = "README.md"
+license = "MIT"
+requires-python = ">=3.10"
+authors = [
+    { name = "Ardi Loot" },
+]
+classifiers = [
+    "Development Status :: 4 - Beta",
+    "Environment :: Console",
+    "Intended Audience :: Developers",
+    "Programming Language :: Python :: 3",
+    "Programming Language :: Python :: 3.10",
+    "Programming Language :: Python :: 3.11",
+    "Programming Language :: Python :: 3.12",
+    "Programming Language :: Python :: 3.13",
+    "Topic :: Software Development :: Version Control :: Git",
+]
+dependencies = [
+    "colorlog",
+    "tomli>=2.0; python_version < '3.11'",
+]
+
+[project.urls]
+Homepage = "https://github.com/ardiloot/pubgate"
+Repository = "https://github.com/ardiloot/pubgate"
+Issues = "https://github.com/ardiloot/pubgate/issues"
+
+[project.scripts]
+pubgate = "pubgate.__main__:main"
+
+[build-system]
+requires = ["setuptools", "setuptools-scm"]
+build-backend = "setuptools.build_meta"
+
+[dependency-groups]
+dev = [
+    "pytest",
+    "pytest-xdist",
+    "ruff",
+    "ty",
+    "pre-commit",
+    "pre-commit-uv",
+]
+
+[tool.setuptools_scm]
+
+[tool.pytest.ini_options]
+testpaths = ["tests"]
+
+[tool.ruff]
+target-version = "py310"
+line-length = 120
+
+[tool.ruff.lint]
+select = ["E", "F", "W", "I"]
+
+[tool.ty.environment]
+python-version = "3.10"
