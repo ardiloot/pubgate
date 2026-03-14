@@ -338,9 +338,15 @@ class PubGate:
                 logger.info("No changes to publish (public repo already has this content)")
                 return False
 
-            msg = f"pubgate: publish stage from {main_sha[:7]}"
+            subject = f"pubgate: publish stage from {main_sha[:7]}"
+            lines = [subject]
+            if preview_commits:
+                lines.append("")
+                lines.append(f"Included commits ({publish_log_base[:7]}..{origin_preview_ref}):")
+                lines.extend(f"  {i}. {_format_commit(c)}" for i, c in enumerate(preview_commits, 1))
+            msg = "\n".join(lines)
             sha = git.commit(msg)
-            logger.info("Committed on %s (%s %s)", cfg.publish_pr_branch, sha[:7], msg)
+            logger.info("Committed on %s (%s %s)", cfg.publish_pr_branch, sha[:7], subject)
             return True
 
         def _publish_push() -> None:
@@ -540,7 +546,8 @@ class PubGate:
         lines = [subject]
         if commits:
             lines.append("")
-            lines.extend(f"  {_format_commit(c)}" for c in commits)
+            lines.append(f"Included commits ({last_absorbed[:7]}..{public_head[:7]}):")
+            lines.extend(f"  {i}. {_format_commit(c)}" for i, c in enumerate(commits, 1))
         if conflicted:
             lines.append("")
             lines.append("CONFLICTS (resolve before merging):")
@@ -556,12 +563,6 @@ class PubGate:
         *,
         remote_sha: str | None,
     ) -> tuple[str, str]:
-        """Determine the publish branch base and the log-listing base.
-
-        Returns (publish_base, publish_log_base) where:
-        - publish_base: the commit to branch from for the publish PR
-        - publish_log_base: the preview commit after which new commits are listed
-        """
         cfg, git = self.cfg, self.git
 
         # Find the preview commit that was last published
@@ -616,7 +617,8 @@ class PubGate:
         if not commits:
             return subject
         lines = [subject, ""]
-        lines.extend(f"  {_format_commit(c)}" for c in commits)
+        lines.append(f"Included commits ({prev_ref.sha[:7]}..{main_head[:7]}):")
+        lines.extend(f"  {i}. {_format_commit(c)}" for i, c in enumerate(commits, 1))
         return "\n".join(lines)
 
     def _build_stage_snapshot(self, ignore_patterns: list[str]) -> dict[str, str | bytes]:
