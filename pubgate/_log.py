@@ -17,7 +17,7 @@ def setup_logging() -> None:
     if hasattr(sys.stderr, "isatty") and sys.stderr.isatty():
         handler.setFormatter(
             colorlog.ColoredFormatter(
-                "%(log_color)s%(levelname)s%(reset)s %(name)s: %(message)s",
+                "%(log_color)s[%(levelname)-7s]:%(reset)s %(message)s",
                 log_colors={
                     "DEBUG": "cyan",
                     "INFO": "green",
@@ -28,7 +28,7 @@ def setup_logging() -> None:
             )
         )
     else:
-        handler.setFormatter(logging.Formatter("%(levelname)s %(name)s: %(message)s"))
+        handler.setFormatter(logging.Formatter("[%(levelname)-7s]: %(message)s"))
 
     root = logging.getLogger()
     root.handlers.clear()

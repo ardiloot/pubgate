@@ -3,6 +3,7 @@ import tempfile
 from pathlib import Path
 
 from .errors import GitError
+from .filtering import scrub_internal_blocks
 from .git import GitRepo
 
 logger = logging.getLogger(__name__)
@@ -25,7 +26,26 @@ def apply_absorb_changes(
         if change.is_add:
             local_path = git.repo_dir / change.path
             if local_path.exists():
-                actions.append(f"  added on public (kept local version, review manually): {change.path}")
+                if git.is_binary_at_ref(public_ref, change.path):
+                    actions.append(f"  added on public (kept local version, review manually): {change.path}")
+                else:
+                    theirs_content = git.read_file_at_ref(public_ref, change.path)
+                    if theirs_content is None:
+                        actions.append(f"  added on public (kept local version, review manually): {change.path}")
+                        continue
+                    local_content = local_path.read_text(encoding="utf-8")
+                    filtered_local = scrub_internal_blocks(local_content, path=change.path)
+                    with tempfile.TemporaryDirectory() as tmpdir:
+                        base_tmp = Path(tmpdir) / "base"
+                        theirs_tmp = Path(tmpdir) / "theirs"
+                        base_tmp.write_text(filtered_local, encoding="utf-8")
+                        theirs_tmp.write_text(theirs_content, encoding="utf-8")
+                        clean = git.merge_file(local_path, base_tmp, theirs_tmp)
+                        git.stage(change.path)
+                        if clean:
+                            actions.append(f"  merge (clean): {change.path}")
+                        else:
+                            actions.append(f"  merge (CONFLICTS - resolve manually): {change.path}")
             else:
                 is_binary = git.copy_file_from_ref(public_ref, change.path)
                 actions.append(f"  add{' (binary)' if is_binary else ''}: {change.path}")

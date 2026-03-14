@@ -88,7 +88,7 @@ class TestPublishFullCycle:
         # Stage should still work
         topo.pubgate.stage()
 
-    def test_absorb_after_publish_preserves_internal_blocks(self, topo: Topology):
+    def test_absorb_after_publish_preserves_internal_blocks(self, topo: Topology, caplog):
         """BEGIN-INTERNAL blocks survive a full publish → absorb round-trip."""
         internal_content = "public line\n# BEGIN-INTERNAL\nsecret()\n# END-INTERNAL\npublic end\n"
         topo.commit_internal({"app.py": internal_content})
@@ -109,7 +109,13 @@ class TestPublishFullCycle:
 
         # Absorb after publish must preserve internal blocks
         topo.work_dir.run("checkout", "main")
-        topo.pubgate.absorb()
+        with caplog.at_level(logging.INFO, logger="pubgate"):
+            topo.pubgate.absorb()
+
+        # Should be a clean merge, no warnings
+        assert "merge (clean): app.py" in caplog.text
+        assert "kept local version" not in caplog.text
+        assert "CONFLICTS" not in caplog.text
 
         absorbed = topo.work_dir.read_file_at_ref(topo.cfg.absorb_pr_branch, "app.py")
         assert absorbed is not None

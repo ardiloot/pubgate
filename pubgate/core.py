@@ -62,8 +62,9 @@ class PubGate:
 
             def _bootstrap_work() -> bool:
                 git.write_file_and_stage(cfg.absorb_state_file, public_head + "\n")
-                sha = git.commit(f"pubgate: initialize absorb tracking at {public_head[:7]}")
-                logger.info("Committed %s on %s", sha[:7], cfg.absorb_pr_branch)
+                msg = f"pubgate: initialize absorb tracking at {public_head[:7]}"
+                sha = git.commit(msg)
+                logger.info("Committed on %s (%s %s)", cfg.absorb_pr_branch, sha[:7], msg)
                 return True
 
             self._run_on_pr_branch(
@@ -74,7 +75,7 @@ class PubGate:
                 work_fn=_bootstrap_work,
             )
             self._push_to_remote(cfg.absorb_pr_branch, "origin", cfg.absorb_pr_branch, force=force)
-            self._report_pr(cfg.absorb_pr_branch, cfg.internal_main_branch, "pubgate: initialize absorb tracking")
+            self._report_pr(cfg.absorb_pr_branch, cfg.internal_main_branch)
             return
 
         # NEEDS_ABSORB - normal absorb
@@ -108,6 +109,8 @@ class PubGate:
 
         def _absorb_work() -> bool:
             actions = self._apply_absorb_changes(last_absorbed, public_head)
+            if actions:
+                logger.info("Changes:")
             for a in actions:
                 if "review manually" in a or "CONFLICTS" in a:
                     logger.warning("%s", a)
@@ -117,7 +120,7 @@ class PubGate:
             conflicted = [a.split(": ", 1)[1] for a in actions if "CONFLICTS" in a]
             msg = self._absorb_commit_message(last_absorbed, public_head, conflicted)
             sha = git.commit(msg)
-            logger.info("Committed %s on %s", sha[:7], cfg.absorb_pr_branch)
+            logger.info("Committed on %s (%s %s)", cfg.absorb_pr_branch, sha[:7], msg.split("\n", 1)[0])
             return True
 
         self._run_on_pr_branch(
@@ -128,9 +131,7 @@ class PubGate:
             work_fn=_absorb_work,
         )
         self._push_to_remote(cfg.absorb_pr_branch, "origin", cfg.absorb_pr_branch, force=force)
-        self._report_pr(
-            cfg.absorb_pr_branch, cfg.internal_main_branch, f"pubgate: absorb {last_absorbed[:7]}..{public_head[:7]}"
-        )
+        self._report_pr(cfg.absorb_pr_branch, cfg.internal_main_branch)
 
     def stage(self, *, dry_run: bool = False, force: bool = False) -> None:
         cfg, git = self.cfg, self.git
@@ -160,6 +161,29 @@ class PubGate:
 
         self._ensure_public_branch()
 
+        prev_state = git.read_file_at_ref(origin_preview_ref, cfg.stage_state_file)
+        if prev_state is not None:
+            try:
+                prev_sha = validate_state_sha(prev_state, f"{origin_preview_ref}:{cfg.stage_state_file}")
+                internal_commits = git.log_oneline(prev_sha, main_head)
+            except PubGateError:
+                internal_commits = []
+        else:
+            internal_commits = []
+        n = len(internal_commits)
+        if n:
+            logger.info(
+                "Staging %d %s: %s..%s",
+                n,
+                "commit" if n == 1 else "commits",
+                prev_sha[:7],
+                main_head[:7],
+            )
+            for sha, subject in internal_commits:
+                logger.info("  %s %s", sha[:7], subject)
+        else:
+            logger.info("Staging changes into public-preview")
+
         def _stage_work() -> bool:
             existing = git.ls_tree("HEAD")
             for path in existing:
@@ -177,7 +201,7 @@ class PubGate:
 
             msg = self._stage_commit_message(main_head, origin_preview_ref)
             sha = git.commit(msg)
-            logger.info("Committed %s on %s", sha[:7], cfg.stage_pr_branch)
+            logger.info("Committed on %s (%s %s)", cfg.stage_pr_branch, sha[:7], msg.split("\n", 1)[0])
             return True
 
         committed = self._run_on_pr_branch(
@@ -189,11 +213,7 @@ class PubGate:
         )
         if committed:
             self._push_to_remote(cfg.stage_pr_branch, "origin", cfg.stage_pr_branch, force=force)
-            self._report_pr(
-                cfg.stage_pr_branch,
-                cfg.internal_preview_branch,
-                f"pubgate: stage from {main_head[:7]}",
-            )
+            self._report_pr(cfg.stage_pr_branch, cfg.internal_preview_branch)
 
     def publish(self, *, dry_run: bool = False, force: bool = False) -> None:
         cfg, git = self.cfg, self.git
@@ -245,6 +265,30 @@ class PubGate:
                 logger.info("  %s", path)
             return
 
+        # Log commits being published
+        remote_stage_state_val = git.read_file_at_ref(public_main, cfg.stage_state_file)
+        if remote_stage_state_val is not None:
+            try:
+                prev_published = validate_state_sha(remote_stage_state_val, f"{public_main}:{cfg.stage_state_file}")
+                staged_commits = git.log_oneline(prev_published, main_sha)
+            except PubGateError:
+                staged_commits = []
+        else:
+            staged_commits = []
+        n = len(staged_commits)
+        if n:
+            logger.info(
+                "Publishing %d %s: %s..%s",
+                n,
+                "commit" if n == 1 else "commits",
+                prev_published[:7],
+                main_sha[:7],
+            )
+            for sha, subject in staged_commits:
+                logger.info("  %s %s", sha[:7], subject)
+        else:
+            logger.info("Publishing staged content to %s", cfg.public_remote)
+
         def _publish_work() -> bool:
             existing = git.ls_tree("HEAD")
             for path in existing:
@@ -257,8 +301,9 @@ class PubGate:
                 logger.info("No changes to publish (public repo already has this content)")
                 return False
 
-            sha = git.commit(f"pubgate: publish stage from {main_sha[:7]}")
-            logger.info("Committed %s on %s", sha[:7], cfg.publish_pr_branch)
+            msg = f"pubgate: publish stage from {main_sha[:7]}"
+            sha = git.commit(msg)
+            logger.info("Committed on %s (%s %s)", cfg.publish_pr_branch, sha[:7], msg)
             return True
 
         def _publish_push() -> None:
@@ -273,11 +318,7 @@ class PubGate:
             after_fn=_publish_push,
         )
         if committed:
-            self._report_pr(
-                cfg.publish_pr_branch,
-                cfg.public_main_branch,
-                f"pubgate: publish stage from {main_sha[:7]}",
-            )
+            self._report_pr(cfg.publish_pr_branch, cfg.public_main_branch)
 
     # ------------------------------------------------------------------
     # Shared workflow (private)
@@ -419,8 +460,8 @@ class PubGate:
         logger.info("Pushing %s to %s/%s", local_branch, remote, remote_branch)
         self.git.push(local_branch, remote, remote_branch, force=force)
 
-    def _report_pr(self, head: str, base: str, title: str) -> None:
-        logger.info("Next step: create PR '%s → %s' on your git host | %s", head, base, title)
+    def _report_pr(self, head: str, base: str) -> None:
+        logger.info("Next step: create PR '%s → %s' on your git host", head, base)
 
     def _prune_internal_pr_branches(self) -> None:
         cfg, git = self.cfg, self.git
