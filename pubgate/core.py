@@ -75,7 +75,9 @@ class PubGate:
                 work_fn=_bootstrap_work,
             )
             self._push_to_remote(cfg.absorb_pr_branch, "origin", cfg.absorb_pr_branch, force=force)
-            self._report_pr(cfg.absorb_pr_branch, cfg.internal_main_branch)
+            logger.info("Next steps:")
+            logger.info("  1. Create PR '%s → %s' on your git host", cfg.absorb_pr_branch, cfg.internal_main_branch)
+            logger.info("  2. Review and merge the PR")
             return
 
         # NEEDS_ABSORB - normal absorb
@@ -131,7 +133,9 @@ class PubGate:
             work_fn=_absorb_work,
         )
         self._push_to_remote(cfg.absorb_pr_branch, "origin", cfg.absorb_pr_branch, force=force)
-        self._report_pr(cfg.absorb_pr_branch, cfg.internal_main_branch)
+        logger.info("Next steps:")
+        logger.info("  1. Create PR '%s → %s' on your git host", cfg.absorb_pr_branch, cfg.internal_main_branch)
+        logger.info("  2. Review and merge the PR")
 
     def stage(self, *, dry_run: bool = False, force: bool = False) -> None:
         cfg, git = self.cfg, self.git
@@ -213,7 +217,10 @@ class PubGate:
         )
         if committed:
             self._push_to_remote(cfg.stage_pr_branch, "origin", cfg.stage_pr_branch, force=force)
-            self._report_pr(cfg.stage_pr_branch, cfg.internal_preview_branch)
+            logger.info("Next steps:")
+            logger.info("  1. Create PR '%s → %s' on your git host", cfg.stage_pr_branch, cfg.internal_preview_branch)
+            logger.info("  2. Review and merge the PR")
+            logger.info("  3. Run 'pubgate publish'")
 
     def publish(self, *, dry_run: bool = False, force: bool = False) -> None:
         cfg, git = self.cfg, self.git
@@ -318,7 +325,10 @@ class PubGate:
             after_fn=_publish_push,
         )
         if committed:
-            self._report_pr(cfg.publish_pr_branch, cfg.public_main_branch)
+            logger.info("Next steps:")
+            logger.info("  1. Create PR '%s → %s' on the public repo", cfg.publish_pr_branch, cfg.public_main_branch)
+            logger.info("  2. Review and merge the PR")
+            logger.info("  3. Run 'pubgate absorb' to sync tracking")
 
     # ------------------------------------------------------------------
     # Shared workflow (private)
@@ -459,9 +469,6 @@ class PubGate:
                 raise PubGateError(f"Error: refusing to force-push to protected branch '{remote_branch}'.")
         logger.info("Pushing %s to %s/%s", local_branch, remote, remote_branch)
         self.git.push(local_branch, remote, remote_branch, force=force)
-
-    def _report_pr(self, head: str, base: str) -> None:
-        logger.info("Next step: create PR '%s → %s' on your git host", head, base)
 
     def _prune_internal_pr_branches(self) -> None:
         cfg, git = self.cfg, self.git
