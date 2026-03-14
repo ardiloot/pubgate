@@ -149,9 +149,17 @@ class PubGate:
         ignore_patterns = list(cfg.ignore)
         snapshot = self._build_stage_snapshot(ignore_patterns)
 
-        if self._is_snapshot_unchanged(snapshot):
-            logger.info("No changes to stage (public-preview is already up to date)")
-            return
+        unchanged_ref = self._snapshot_unchanged_ref(snapshot)
+        if unchanged_ref is not None:
+            if unchanged_ref == cfg.stage_pr_branch:
+                if not force:
+                    raise PubGateError(
+                        f"Error: branch '{cfg.stage_pr_branch}' already exists "
+                        f"(previous PR not merged?). Use --force to overwrite."
+                    )
+            else:
+                logger.info("No changes to stage (%s is already up to date)", cfg.internal_preview_branch)
+                return
 
         prev_state = git.read_file_at_ref(origin_preview_ref, cfg.stage_state_file)
         if prev_state is not None:
@@ -391,7 +399,8 @@ class PubGate:
         logger.debug("Inbound status: NEEDS_ABSORB")
         return _AbsorbResult(AbsorbStatus.NEEDS_ABSORB, public_head, last_absorbed)
 
-    def _is_snapshot_unchanged(self, snapshot: dict[str, str | bytes]) -> bool:
+    def _snapshot_unchanged_ref(self, snapshot: dict[str, str | bytes]) -> str | None:
+        """Return the ref the snapshot matched against, or None if there are changes."""
         cfg, git = self.cfg, self.git
         if git.branch_exists(cfg.stage_pr_branch):
             compare_ref = cfg.stage_pr_branch
@@ -401,12 +410,12 @@ class PubGate:
             logger.debug("Comparing snapshot against origin/%s", cfg.internal_preview_branch)
         else:
             logger.debug("No previous snapshot to compare against")
-            return not snapshot
+            return "(empty)" if not snapshot else None
 
         prev_files = set(git.ls_tree(compare_ref)) - {cfg.stage_state_file, cfg.absorb_state_file}
         new_files = set(snapshot.keys()) - {cfg.absorb_state_file}
         if prev_files != new_files:
-            return False
+            return None
 
         for path in new_files:
             new_content = snapshot[path]
@@ -415,8 +424,8 @@ class PubGate:
             else:
                 old_content = git.read_file_at_ref(compare_ref, path)
             if old_content != new_content:
-                return False
-        return True
+                return None
+        return compare_ref
 
     def _guard_branch_not_exists(self, name: str, *, force: bool) -> None:
         if not force and self.git.branch_exists(name):

@@ -48,7 +48,13 @@ class TestStageBasic:
 
 
 class TestStageIdempotent:
-    def test_staging_twice_produces_same_files(self, topo: Topology):
+    def test_staging_twice_errors_without_force(self, topo: Topology):
+        topo.bootstrap_absorb()
+        topo.pubgate.stage()
+        with pytest.raises(PubGateError, match="already exists"):
+            topo.pubgate.stage()
+
+    def test_staging_twice_with_force_produces_same_files(self, topo: Topology):
         topo.bootstrap_absorb()
         topo.pubgate.stage()
         ob = topo.cfg.stage_pr_branch
@@ -60,7 +66,7 @@ class TestStageIdempotent:
             }
 
         first = snap()
-        topo.pubgate.stage()
+        topo.pubgate.stage(force=True)
         assert snap() == first
 
 
@@ -180,16 +186,15 @@ class TestStageRetroactiveIgnore:
 
 
 class TestStageInternalOnlyChanges:
-    def test_internal_only_change_is_noop(self, topo: Topology, caplog):
+    def test_internal_only_change_errors_without_force(self, topo: Topology):
         topo.bootstrap_absorb()
         topo.commit_internal({"mixed.py": "public code\n# BEGIN-INTERNAL\ninternal v1\n# END-INTERNAL\n"})
         topo.pubgate.stage()
 
         # Change only the internal block
         topo.commit_internal({"mixed.py": "public code\n# BEGIN-INTERNAL\ninternal v2 changed\n# END-INTERNAL\n"})
-        with caplog.at_level(logging.INFO, logger="pubgate"):
+        with pytest.raises(PubGateError, match="already exists"):
             topo.pubgate.stage()
-        assert "No changes" in caplog.text or "up to date" in caplog.text
 
 
 class TestStageStaleOutbound:
