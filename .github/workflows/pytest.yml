@@ -45,4 +45,4 @@ jobs:
           git config --global user.email "ci@test.local"
 
       - name: Test with pytest
-        run: uv run pytest -v
+        run: uv run pytest -v -n auto
