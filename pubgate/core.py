@@ -531,7 +531,7 @@ class PubGate:
         if commits:
             lines.append("")
             for c in commits:
-                lines.append(f"  {c.sha[:7]} {c.subject}")
+                lines.append(f"  {c.subject} ({c.sha[:7]}, {c.author}, {c.date})")
         if conflicted:
             lines.append("")
             lines.append("CONFLICTS (resolve before merging):")
@@ -557,7 +557,7 @@ class PubGate:
             return subject
         lines = [subject, ""]
         for c in commits:
-            lines.append(f"  {c.sha[:7]} {c.subject}")
+            lines.append(f"  {c.subject} ({c.sha[:7]}, {c.author}, {c.date})")
         return "\n".join(lines)
 
     def _build_stage_snapshot(self, ignore_patterns: list[str]) -> dict[str, str | bytes]:
