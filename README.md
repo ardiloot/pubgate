@@ -26,7 +26,7 @@ The two workflows:
 
 <table>
 <tr>
-<td valign="top"><strong>Making changes public: absorb → stage → publish</strong><br><em>absorb is recommended first if the public repo has unabsorbed changes, but stage and publish proceed either way</em>
+<td valign="top" width="50%"><strong>Making changes public: absorb → stage → publish</strong><br><em>absorb is recommended first if the public repo has unabsorbed changes, but stage and publish proceed either way</em>
 
 ```mermaid
 %%{init: {"flowchart": {"useMaxWidth": false, "nodeSpacing": 25, "rankSpacing": 30, "padding": 10}}}%%
@@ -45,8 +45,7 @@ flowchart TD
 ```
 
 </td>
-<td width="60"></td>
-<td valign="top"><strong>Incorporating public contributions: absorb</strong><br><em>Run when the public repo has external contributions</em>
+<td valign="top" width="50%"><strong>Incorporating public contributions: absorb</strong><br><em>Run when the public repo has external contributions</em>
 
 ```mermaid
 %%{init: {"flowchart": {"useMaxWidth": false, "nodeSpacing": 25, "rankSpacing": 30, "padding": 10}}}%%
