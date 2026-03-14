@@ -63,8 +63,9 @@ class TestPublishDryRun:
         topo.stage_and_merge()
         with caplog.at_level(logging.INFO, logger="pubgate"):
             topo.pubgate.publish(dry_run=True)
-        assert "[dry-run]" in caplog.text
-        assert "file1.txt" in caplog.text
+        assert "[dry-run] Would commit on" in caplog.text
+        assert "[dry-run] Would push" in caplog.text
+        assert "Next steps" in caplog.text
 
         topo.work_dir.run("fetch", "public-remote")
         result = topo.work_dir.run("branch", "-r").strip()

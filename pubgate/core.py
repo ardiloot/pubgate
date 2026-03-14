@@ -108,6 +108,13 @@ class PubGate:
                     logger.info("  %s: %s", c.status, c.path)
             else:
                 logger.info("  (no file changes)")
+            logger.info("[dry-run] Would commit on %s", cfg.absorb_pr_branch)
+            logger.info("[dry-run] Would push %s to origin/%s", cfg.absorb_pr_branch, cfg.absorb_pr_branch)
+            logger.info("Next steps:")
+            logger.info(
+                "  1. Create PR '%s \u2192 %s' on your git host", cfg.absorb_pr_branch, cfg.internal_main_branch
+            )
+            logger.info("  2. Review and merge the PR")
             return
 
         def _absorb_work() -> bool:
@@ -185,11 +192,14 @@ class PubGate:
             logger.info("Staging changes into public-preview")
 
         if dry_run:
-            state_files = {cfg.absorb_state_file, cfg.stage_state_file}
-            user_files = sorted(p for p in snapshot if p not in state_files)
-            logger.info("[dry-run] Would stage %d file(s):", len(user_files))
-            for path in user_files:
-                logger.info("  %s", path)
+            logger.info("[dry-run] Would commit on %s", cfg.stage_pr_branch)
+            logger.info("[dry-run] Would push %s to origin/%s", cfg.stage_pr_branch, cfg.stage_pr_branch)
+            logger.info("Next steps:")
+            logger.info(
+                "  1. Create PR '%s \u2192 %s' on your git host", cfg.stage_pr_branch, cfg.internal_preview_branch
+            )
+            logger.info("  2. Review and merge the PR")
+            logger.info("  3. Run 'pubgate publish' (if ready)")
             return
 
         self._ensure_public_branch()
@@ -293,11 +303,16 @@ class PubGate:
             logger.info("Publishing staged content to %s", cfg.public_remote)
 
         if dry_run:
-            state_files = {cfg.absorb_state_file, cfg.stage_state_file}
-            user_files = sorted(p for p in public_files if p not in state_files)
-            logger.info("[dry-run] Would publish %d file(s) to %s:", len(user_files), cfg.public_remote)
-            for path in user_files:
-                logger.info("  %s", path)
+            logger.info("[dry-run] Would commit on %s", cfg.publish_pr_branch)
+            logger.info(
+                "[dry-run] Would push %s to %s/%s", cfg.publish_pr_branch, cfg.public_remote, cfg.publish_pr_branch
+            )
+            logger.info("Next steps:")
+            logger.info(
+                "  1. Create PR '%s \u2192 %s' on the public repo", cfg.publish_pr_branch, cfg.public_main_branch
+            )
+            logger.info("  2. Review and merge the PR")
+            logger.info("  3. Run 'pubgate absorb' to sync tracking")
             return
 
         def _publish_work() -> bool:

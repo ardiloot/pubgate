@@ -120,8 +120,9 @@ class TestStageDryRun:
         assert not topo.work_dir.git.branch_exists(topo.cfg.internal_preview_branch)
         with caplog.at_level(logging.INFO, logger="pubgate"):
             topo.pubgate.stage(dry_run=True)
-        assert "[dry-run]" in caplog.text
-        assert "file1.txt" in caplog.text
+        assert "[dry-run] Would commit on" in caplog.text
+        assert "[dry-run] Would push" in caplog.text
+        assert "Next steps" in caplog.text
         assert not topo.work_dir.git.branch_exists(topo.cfg.stage_pr_branch)
         assert not topo.work_dir.git.branch_exists(topo.cfg.internal_preview_branch)
 
