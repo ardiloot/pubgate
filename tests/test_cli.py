@@ -117,8 +117,8 @@ class TestStateFileNameCollision:
         config_path.write_text(
             'public_main_branch = "pub-main"\n'
             'internal_main_branch = "int-main"\n'
-            'inbound_state_file = ".sync-state"\n'
-            'outbound_state_file = ".sync-state"\n',
+            'absorb_state_file = ".sync-state"\n'
+            'stage_state_file = ".sync-state"\n',
             encoding="utf-8",
         )
         from pubgate.config import load_config
@@ -130,7 +130,7 @@ class TestStateFileNameCollision:
         from pubgate.config import Config
 
         cfg = Config()
-        assert cfg.inbound_state_file != cfg.outbound_state_file
+        assert cfg.absorb_state_file != cfg.stage_state_file
 
 
 class TestDetachedHead:

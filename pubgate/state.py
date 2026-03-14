@@ -10,10 +10,10 @@ from .errors import PubGateError
 if TYPE_CHECKING:
     from .git import GitRepo
 
-__all__ = ["InboundStatus", "validate_state_sha", "StateRef"]
+__all__ = ["AbsorbStatus", "validate_state_sha", "StateRef"]
 
 
-class InboundStatus(Enum):
+class AbsorbStatus(Enum):
     UP_TO_DATE = "up_to_date"
     NEEDS_BOOTSTRAP = "needs_bootstrap"
     NEEDS_ABSORB = "needs_absorb"

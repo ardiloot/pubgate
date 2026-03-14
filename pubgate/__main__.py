@@ -35,7 +35,7 @@ def build_parser() -> argparse.ArgumentParser:
     sub = parser.add_subparsers(dest="command")
     for cmd, help_text in (
         (Command.ABSORB.value, "Bring public repo changes into internal main via PR"),
-        (Command.STAGE.value, "Generate outbound candidate and open internal PR into public-preview"),
+        (Command.STAGE.value, "Generate stage candidate and open internal PR into public-preview"),
         (Command.PUBLISH.value, "Push reviewed public-preview content to the public repo and open PR"),
     ):
         sp = sub.add_parser(cmd, help=help_text)

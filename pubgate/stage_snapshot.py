@@ -7,7 +7,7 @@ from .git import GitRepo
 logger = logging.getLogger(__name__)
 
 
-def build_outbound_snapshot(
+def build_stage_snapshot(
     git: GitRepo,
     ref: str,
     ignore_patterns: list[str],

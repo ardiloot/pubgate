@@ -5,7 +5,7 @@ from contextlib import contextmanager
 from pathlib import Path
 
 from .errors import GitError, PubGateError
-from .models import FileChange
+from .models import CommitInfo, FileChange
 
 logger = logging.getLogger(__name__)
 
@@ -211,14 +211,31 @@ class GitRepo:
         result = self._run(*args)
         return [c for c in result.stdout.strip().splitlines() if c]
 
-    def log_oneline(self, base: str, head: str) -> list[tuple[str, str]]:
-        result = self._run("log", "--format=%H %s", f"{base}..{head}")
+    def log_oneline(self, base: str, head: str) -> list[CommitInfo]:
+        _SEP = "\x1f"  # ASCII unit separator
+        result = self._run("log", "--reverse", f"--format=%H{_SEP}%s{_SEP}%aN{_SEP}%ai", f"{base}..{head}")
         entries = []
         for line in result.stdout.strip().splitlines():
             if line:
-                sha, _, subject = line.partition(" ")
-                entries.append((sha, subject))
+                parts = line.split(_SEP, 3)
+                # %ai gives "YYYY-MM-DD HH:MM:SS +ZZZZ", keep "YYYY-MM-DD HH:MM"
+                date_str = parts[3].rsplit(":", 1)[0] if parts[3] else parts[3]
+                entries.append(CommitInfo(sha=parts[0], subject=parts[1], author=parts[2], date=date_str))
         return entries
+
+    def find_commit_introducing(self, base: str, head: str, path: str, content: str) -> str | None:
+        """Find the oldest commit in base..head that changed *path* w.r.t. *content*."""
+        result = self._run(
+            "log",
+            "--reverse",
+            "--format=%H",
+            f"-S{content}",
+            f"{base}..{head}",
+            "--",
+            path,
+        )
+        first_line = result.stdout.strip().split("\n", 1)[0]
+        return first_line if first_line else None
 
     def changed_files_in_commit(self, sha: str) -> list[str]:
         result = self._run("diff-tree", "--no-commit-id", "-r", "--name-only", f"{sha}~1", sha)
@@ -354,10 +371,14 @@ class GitRepo:
             content = self.read_file_at_ref_bytes(ref, path)
             if content is not None:
                 self.write_file_and_stage_bytes(path, content)
+            else:
+                logger.warning("Could not read binary file %s at %s (skipped)", path, ref)
             return True
         content = self.read_file_at_ref(ref, path)
         if content is not None:
             self.write_file_and_stage(path, content)
+        else:
+            logger.warning("Could not read file %s at %s (skipped)", path, ref)
         return False
 
     # ------------------------------------------------------------------

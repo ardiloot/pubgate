@@ -17,7 +17,7 @@ class TestStageConflictMarkers:
         topo.commit_to_public({"shared.txt": "public version\n"})
         topo.pubgate.absorb()
         # Merge the absorb PR WITHOUT resolving the conflict markers
-        topo.merge_internal_pr(topo.cfg.inbound_pr_branch, "main")
+        topo.merge_internal_pr(topo.cfg.absorb_pr_branch, "main")
 
         # Stage should refuse because shared.txt has conflict markers
         with pytest.raises(PubGateError, match="merge-conflict marker"):
@@ -30,29 +30,35 @@ class TestStageBasic:
         assert not topo.work_dir.git.branch_exists(topo.cfg.internal_preview_branch)
         topo.pubgate.stage()
 
-        assert topo.work_dir.git.branch_exists(topo.cfg.outbound_pr_branch)
+        assert topo.work_dir.git.branch_exists(topo.cfg.stage_pr_branch)
         assert topo.work_dir.git.branch_exists(topo.cfg.internal_preview_branch)
 
-        files = topo.work_dir.list_files_at_ref(topo.cfg.outbound_pr_branch)
+        files = topo.work_dir.list_files_at_ref(topo.cfg.stage_pr_branch)
         assert "file1.txt" in files
-        assert topo.cfg.inbound_state_file in files
+        assert topo.cfg.absorb_state_file in files
         assert "pubgate.toml" not in files
 
-        content = topo.work_dir.read_file_at_ref(topo.cfg.outbound_pr_branch, "file1.txt")
+        content = topo.work_dir.read_file_at_ref(topo.cfg.stage_pr_branch, "file1.txt")
         assert content is not None
         assert "internal content" in content
 
-        state = topo.work_dir.read_file_at_ref(topo.cfg.outbound_pr_branch, topo.cfg.outbound_state_file)
+        state = topo.work_dir.read_file_at_ref(topo.cfg.stage_pr_branch, topo.cfg.stage_state_file)
         assert state is not None
         assert state.strip() == topo.work_dir.git.rev_parse("main")
 
 
 class TestStageIdempotent:
-    def test_staging_twice_produces_same_files(self, topo: Topology):
+    def test_staging_twice_errors_without_force(self, topo: Topology):
         topo.bootstrap_absorb()
         topo.pubgate.stage()
-        ob = topo.cfg.outbound_pr_branch
-        state_file = topo.cfg.outbound_state_file
+        with pytest.raises(PubGateError, match="already exists"):
+            topo.pubgate.stage()
+
+    def test_staging_twice_with_force_produces_same_files(self, topo: Topology):
+        topo.bootstrap_absorb()
+        topo.pubgate.stage()
+        ob = topo.cfg.stage_pr_branch
+        state_file = topo.cfg.stage_state_file
 
         def snap():
             return {
@@ -60,49 +66,49 @@ class TestStageIdempotent:
             }
 
         first = snap()
-        topo.pubgate.stage()
+        topo.pubgate.stage(force=True)
         assert snap() == first
 
 
 class TestStageGuards:
     def test_stage_errors_without_bootstrap(self, topo: Topology):
-        # No absorb has been run, so .pubgate-state-inbound doesn't exist
-        with pytest.raises(PubGateError, match="no inbound state found"):
+        # No absorb has been run, so .pubgate-state-absorb doesn't exist
+        with pytest.raises(PubGateError, match="no absorb state found"):
             topo.pubgate.stage()
 
     def test_stage_proceeds_with_unabsorbed_externals(self, topo: Topology):
         topo.bootstrap_absorb()
         topo.commit_to_public({"newer.txt": "newer\n"})
         topo.pubgate.stage()  # Should succeed even with unabsorbed externals
-        files = topo.work_dir.list_files_at_ref(topo.cfg.outbound_pr_branch)
+        files = topo.work_dir.list_files_at_ref(topo.cfg.stage_pr_branch)
         assert "file1.txt" in files
         assert "newer.txt" not in files  # Not absorbed, so not in snapshot
 
     def test_restage_without_publishing_succeeds(self, topo: Topology):
         topo.bootstrap_absorb()
         topo.pubgate.stage()
-        topo.merge_internal_pr(topo.cfg.outbound_pr_branch, topo.cfg.internal_preview_branch)
+        topo.merge_internal_pr(topo.cfg.stage_pr_branch, topo.cfg.internal_preview_branch)
         # New change without publishing previous outbound
         topo.commit_internal({"another.txt": "another\n"})
         topo.pubgate.stage()  # Should succeed without requiring publish first
-        files = topo.work_dir.list_files_at_ref(topo.cfg.outbound_pr_branch)
+        files = topo.work_dir.list_files_at_ref(topo.cfg.stage_pr_branch)
         assert "another.txt" in files
 
     def test_restage_then_publish_delivers_updated_content(self, topo: Topology):
         topo.bootstrap_absorb()
         topo.pubgate.stage()
-        topo.merge_internal_pr(topo.cfg.outbound_pr_branch, topo.cfg.internal_preview_branch)
+        topo.merge_internal_pr(topo.cfg.stage_pr_branch, topo.cfg.internal_preview_branch)
 
         # New internal change, then restage
         topo.commit_internal({"v2.txt": "version 2\n"})
         topo.pubgate.stage()
-        topo.merge_internal_pr(topo.cfg.outbound_pr_branch, topo.cfg.internal_preview_branch)
+        topo.merge_internal_pr(topo.cfg.stage_pr_branch, topo.cfg.internal_preview_branch)
 
         # Publish delivers the restaged content
         topo.pubgate.publish()
 
         topo.work_dir.run("fetch", "public-remote")
-        pr_ref = f"public-remote/{topo.cfg.public_pr_branch}"
+        pr_ref = f"public-remote/{topo.cfg.publish_pr_branch}"
         files = topo.work_dir.list_files_at_ref(pr_ref)
         assert "file1.txt" in files
         assert "v2.txt" in files
@@ -114,9 +120,10 @@ class TestStageDryRun:
         assert not topo.work_dir.git.branch_exists(topo.cfg.internal_preview_branch)
         with caplog.at_level(logging.INFO, logger="pubgate"):
             topo.pubgate.stage(dry_run=True)
-        assert "[dry-run]" in caplog.text
-        assert "file1.txt" in caplog.text
-        assert not topo.work_dir.git.branch_exists(topo.cfg.outbound_pr_branch)
+        assert "[dry-run] Would commit on" in caplog.text
+        assert "[dry-run] Would push" in caplog.text
+        assert "Next steps" in caplog.text
+        assert not topo.work_dir.git.branch_exists(topo.cfg.stage_pr_branch)
         assert not topo.work_dir.git.branch_exists(topo.cfg.internal_preview_branch)
 
 
@@ -127,7 +134,7 @@ class TestStageBinary:
         topo.pubgate.stage()
 
         # Read binary content back from the staged branch
-        staged = topo.work_dir.git.read_file_at_ref_bytes(topo.cfg.outbound_pr_branch, "icon.png")
+        staged = topo.work_dir.git.read_file_at_ref_bytes(topo.cfg.stage_pr_branch, "icon.png")
         assert staged == SAMPLE_PNG
 
     def test_non_utf8_file_staged_intact(self, topo: Topology):
@@ -135,7 +142,7 @@ class TestStageBinary:
         topo.commit_internal({"latin1.txt": SAMPLE_LATIN1})
         topo.pubgate.stage()
 
-        staged = topo.work_dir.git.read_file_at_ref_bytes(topo.cfg.outbound_pr_branch, "latin1.txt")
+        staged = topo.work_dir.git.read_file_at_ref_bytes(topo.cfg.stage_pr_branch, "latin1.txt")
         assert staged == SAMPLE_LATIN1
 
 
@@ -144,11 +151,11 @@ class TestStageAllFiltered:
         topo.bootstrap_absorb()
         topo.cfg = Config(ignore=["*.txt"])
         topo.pubgate.stage()
-        files = topo.work_dir.list_files_at_ref(topo.cfg.outbound_pr_branch)
+        files = topo.work_dir.list_files_at_ref(topo.cfg.stage_pr_branch)
         # No user files, only state files remain
         assert "file1.txt" not in files
-        assert topo.cfg.inbound_state_file in files
-        assert topo.cfg.outbound_state_file in files
+        assert topo.cfg.absorb_state_file in files
+        assert topo.cfg.stage_state_file in files
 
 
 class TestStageEmptyAfterScrub:
@@ -156,8 +163,8 @@ class TestStageEmptyAfterScrub:
         topo.bootstrap_absorb()
         topo.commit_internal({"allsecret.py": "# BEGIN-INTERNAL\nall secret content\n# END-INTERNAL\n"})
         topo.pubgate.stage()
-        # _build_outbound_snapshot includes scrubbed (empty) files
-        content = topo.work_dir.read_file_at_ref(topo.cfg.outbound_pr_branch, "allsecret.py")
+        # _build_stage_snapshot includes scrubbed (empty) files
+        content = topo.work_dir.read_file_at_ref(topo.cfg.stage_pr_branch, "allsecret.py")
         assert content is not None
         assert content.strip() == ""
 
@@ -169,44 +176,43 @@ class TestStageRetroactiveIgnore:
 
         # First stage includes the file
         topo.pubgate.stage()
-        files_v1 = topo.work_dir.list_files_at_ref(topo.cfg.outbound_pr_branch)
+        files_v1 = topo.work_dir.list_files_at_ref(topo.cfg.stage_pr_branch)
         assert "secret.dat" in files_v1
 
         # Add ignore pattern and re-stage
         topo.cfg = Config(ignore=["*.dat"])
         topo.pubgate.stage(force=True)
-        files_v2 = topo.work_dir.list_files_at_ref(topo.cfg.outbound_pr_branch)
+        files_v2 = topo.work_dir.list_files_at_ref(topo.cfg.stage_pr_branch)
         assert "secret.dat" not in files_v2
 
 
 class TestStageInternalOnlyChanges:
-    def test_internal_only_change_is_noop(self, topo: Topology, caplog):
+    def test_internal_only_change_errors_without_force(self, topo: Topology):
         topo.bootstrap_absorb()
         topo.commit_internal({"mixed.py": "public code\n# BEGIN-INTERNAL\ninternal v1\n# END-INTERNAL\n"})
         topo.pubgate.stage()
 
         # Change only the internal block
         topo.commit_internal({"mixed.py": "public code\n# BEGIN-INTERNAL\ninternal v2 changed\n# END-INTERNAL\n"})
-        with caplog.at_level(logging.INFO, logger="pubgate"):
+        with pytest.raises(PubGateError, match="already exists"):
             topo.pubgate.stage()
-        assert "No changes" in caplog.text or "up to date" in caplog.text
 
 
 class TestStageStaleOutbound:
     def test_stage_allowed_when_outbound_stale(self, topo: Topology):
-        """stage() must succeed when pending outbound is stale (external changes absorbed)."""
+        """stage() must succeed when pending stage is stale (external changes absorbed)."""
         topo.stage_and_merge()
 
         # External contribution arrives and is absorbed
         topo.commit_to_public({"external.txt": "external fix\n"})
         topo.pubgate.absorb()
-        topo.merge_internal_pr(topo.cfg.inbound_pr_branch, "main")
+        topo.merge_internal_pr(topo.cfg.absorb_pr_branch, "main")
 
-        # stage() should succeed despite pending outbound (no 'publish first' error)
+        # stage() should succeed despite pending stage (no 'publish first' error)
         topo.pubgate.stage()
 
         # Verify re-staged content includes both internal and external files
-        files = topo.work_dir.list_files_at_ref(topo.cfg.outbound_pr_branch)
+        files = topo.work_dir.list_files_at_ref(topo.cfg.stage_pr_branch)
         assert "file1.txt" in files
         assert "external.txt" in files
 
@@ -215,7 +221,7 @@ class TestStageBranchGuard:
     def test_errors_when_pr_branch_exists(self, topo: Topology):
         topo.bootstrap_absorb()
         topo.pubgate.stage()
-        assert topo.work_dir.git.branch_exists(topo.cfg.outbound_pr_branch)
+        assert topo.work_dir.git.branch_exists(topo.cfg.stage_pr_branch)
 
         # Add a new file and try to stage again - should refuse without --force
         topo.commit_internal({"new.txt": "new\n"})
@@ -228,5 +234,48 @@ class TestStageBranchGuard:
 
         topo.commit_internal({"new.txt": "new\n"})
         topo.pubgate.stage(force=True)
-        files = topo.work_dir.list_files_at_ref(topo.cfg.outbound_pr_branch)
+        files = topo.work_dir.list_files_at_ref(topo.cfg.stage_pr_branch)
         assert "new.txt" in files
+
+
+class TestStageSkipsStateOnly:
+    def test_skips_when_only_absorb_state_changed(self, topo: Topology, caplog):
+        """Stage should skip when the only difference is .pubgate-state-absorb."""
+        topo.stage_and_merge()
+        topo.pubgate.publish()
+
+        # Merge the public PR
+        topo.work_dir.run("fetch", "public-remote")
+        topo.merge_public_pr(topo.cfg.publish_pr_branch, "main")
+
+        # Absorb catches up (updates .pubgate-state-absorb)
+        topo.work_dir.run("checkout", "main")
+        topo.pubgate.absorb()
+        topo.merge_internal_pr(topo.cfg.absorb_pr_branch, "main")
+
+        # Stage should see no content changes and skip
+        with caplog.at_level(logging.INFO, logger="pubgate"):
+            topo.pubgate.stage()
+        assert "No changes to stage" in caplog.text
+
+    def test_proceeds_when_state_and_content_changed(self, topo: Topology):
+        """Stage should proceed when content changes accompany state changes."""
+        topo.stage_and_merge()
+        topo.pubgate.publish()
+
+        # Merge the public PR
+        topo.work_dir.run("fetch", "public-remote")
+        topo.merge_public_pr(topo.cfg.publish_pr_branch, "main")
+
+        # Absorb catches up
+        topo.work_dir.run("checkout", "main")
+        topo.pubgate.absorb()
+        topo.merge_internal_pr(topo.cfg.absorb_pr_branch, "main")
+
+        # Make a real content change
+        topo.commit_internal({"new-feature.txt": "feature code\n"})
+
+        # Stage should proceed (content changed, not just state)
+        topo.pubgate.stage()
+        files = topo.work_dir.list_files_at_ref(topo.cfg.stage_pr_branch)
+        assert "new-feature.txt" in files
