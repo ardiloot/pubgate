@@ -19,6 +19,12 @@ def _log_commits(commits: list[CommitInfo]) -> None:
         logger.info("  %d. %s", i, format_commit(c))
 
 
+def _split_message(msg: str) -> tuple[str, str]:
+    title = msg.split("\n", 1)[0]
+    body = msg.split("\n", 1)[1].strip() if "\n" in msg else ""
+    return title, body
+
+
 # ---------------------------------------------------------------------------
 # PubGate class
 # ---------------------------------------------------------------------------
@@ -168,8 +174,7 @@ class PubGate:
         )
         self._push_to_remote(cfg.absorb_pr_branch, "origin", cfg.absorb_pr_branch, force=force)
         full_msg = absorb_commit_message(git, last_absorbed, public_head)
-        title = full_msg.split("\n", 1)[0]
-        body = full_msg.split("\n", 1)[1].strip() if "\n" in full_msg else ""
+        title, body = _split_message(full_msg)
         self._handle_pr(
             remote="origin",
             head=cfg.absorb_pr_branch,
@@ -272,8 +277,7 @@ class PubGate:
         if committed:
             self._push_to_remote(cfg.stage_pr_branch, "origin", cfg.stage_pr_branch, force=force)
             full_msg = stage_commit_message(git, cfg, main_head, origin_preview_ref)
-            title = full_msg.split("\n", 1)[0]
-            body = full_msg.split("\n", 1)[1].strip() if "\n" in full_msg else ""
+            title, body = _split_message(full_msg)
             self._handle_pr(
                 remote="origin",
                 head=cfg.stage_pr_branch,
@@ -399,8 +403,7 @@ class PubGate:
         )
         if committed:
             full_msg = publish_commit_message(main_sha, preview_commits, publish_log_base, origin_preview_ref)
-            title = full_msg.split("\n", 1)[0]
-            body = full_msg.split("\n", 1)[1].strip() if "\n" in full_msg else ""
+            title, body = _split_message(full_msg)
             self._handle_pr(
                 remote=cfg.public_remote,
                 head=cfg.publish_pr_branch,
