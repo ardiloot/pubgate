@@ -295,7 +295,7 @@ class TestNoPrCLIFlag:
 
 
 # ---------------------------------------------------------------------------
-# _gh_is_available — direct tests
+# _gh_is_available: direct tests
 # ---------------------------------------------------------------------------
 
 
@@ -333,7 +333,7 @@ class TestGhIsAvailable:
 
 
 # ---------------------------------------------------------------------------
-# GitHubCLIProvider — additional edge cases
+# GitHubCLIProvider: additional edge cases
 # ---------------------------------------------------------------------------
 
 
@@ -380,7 +380,7 @@ class TestGitHubCLIProviderEdgeCases:
 
 
 # ---------------------------------------------------------------------------
-# _handle_pr — remote URL exception fallback
+# _handle_pr: remote URL exception fallback
 # ---------------------------------------------------------------------------
 
 

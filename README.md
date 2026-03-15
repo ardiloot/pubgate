@@ -73,7 +73,7 @@ flowchart TD
 - Python 3.10+ and `git` CLI
 - An existing internal repo with an `origin` remote
 - An existing public repo with at least one commit (e.g. a README created during repo setup)
-- *(Optional)* [`gh` CLI](https://cli.github.com/) authenticated via `gh auth login` — enables automatic PR creation for GitHub-hosted repos. Without it, pubgate logs the manual steps instead.
+- *(Optional)* [`gh` CLI](https://cli.github.com/) authenticated via `gh auth login`. Enables automatic PR creation for GitHub-hosted repos. Without it, pubgate logs the manual steps instead.
 - A clean worktree on `main`, synced with `origin` (no uncommitted changes, no unpushed commits)
 
 ### Setup

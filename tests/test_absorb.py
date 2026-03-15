@@ -178,7 +178,7 @@ class TestAbsorbMerge:
         topo.pubgate.absorb()
 
         # The base for this merge is the round-1 public version (line1/line2/PUBLIC-V1).
-        # Internal changed line 1 → INTERNAL-V2, public changed line 3 → PUBLIC-V2.
+        # Internal changed line 1 -> INTERNAL-V2, public changed line 3 -> PUBLIC-V2.
         # If base were wrong, internal's line-1 change would conflict.
         merged = topo.work_dir.read_file_at_ref(topo.cfg.absorb_pr_branch, "public-file.txt")
         assert merged is not None
@@ -534,7 +534,7 @@ class TestAbsorbMetadataOnly:
         topo.commit_internal({"app.txt": "content\n"})
         topo.do_full_publish_cycle()
 
-        # Absorb: public changed (state file + app.txt) — should succeed
+        # Absorb: public changed (state file + app.txt), should succeed
         with caplog.at_level(logging.INFO, logger="pubgate"):
             topo.pubgate.absorb()
 
@@ -587,7 +587,7 @@ class TestAbsorbAddMergeConflict:
         internal_content = "header\n# BEGIN-INTERNAL\nsecret\n# END-INTERNAL\nfooter\n"
         topo.commit_internal({"new-shared.txt": internal_content})
 
-        # Stage and publish — file appears on public for the first time
+        # Stage and publish: file appears on public for the first time
         topo.bootstrap_absorb()
         topo.do_full_publish_cycle()
 

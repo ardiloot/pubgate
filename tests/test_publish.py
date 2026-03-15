@@ -453,7 +453,7 @@ class TestPublishForcePushProtection:
         topo.stage_and_merge()
         topo.pubgate.publish()
 
-        # Try to force-push to internal main — should fail
+        # Try to force-push to internal main (should fail)
         with pytest.raises(PubGateError, match="refusing to force-push"):
             topo.pubgate._push_to_remote("main", "origin", "main", force=True)
 
@@ -486,7 +486,7 @@ class TestPublishBaseKeptOnExternalChanges:
         topo.publish_and_merge()
         topo.absorb_and_merge()
 
-        # External contributor adds a file AFTER absorb — not yet absorbed
+        # External contributor adds a file AFTER absorb (not yet absorbed)
         topo.commit_to_public({"external.txt": "external contribution\n"})
 
         # Stage and publish without absorbing the external change first

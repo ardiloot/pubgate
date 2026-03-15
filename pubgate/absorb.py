@@ -134,7 +134,7 @@ def _apply_absorb_changes(
                             else:
                                 actions.append(f"  merge (CONFLICTS - resolve manually): {change.path}")
                     else:
-                        # No staged version — file wasn't published through pubgate
+                        # No staged version; file wasn't published through pubgate
                         actions.append(f"  added on public (kept local, review manually): {change.path}")
             else:
                 is_binary = git.copy_file_from_ref(public_ref, change.path)
