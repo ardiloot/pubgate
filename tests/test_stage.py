@@ -326,6 +326,7 @@ class TestEnsurePublicBranchCleanup:
         from unittest.mock import patch
 
         from pubgate.git import GitRepo
+        from pubgate.stage_snapshot import ensure_public_branch
 
         topo.bootstrap_absorb()
 
@@ -350,7 +351,7 @@ class TestEnsurePublicBranchCleanup:
             caplog.at_level(logging.WARNING, logger="pubgate"),
             pytest.raises(RuntimeError, match="simulated commit failure"),
         ):
-            topo.pubgate._ensure_public_branch()
+            ensure_public_branch(topo.pubgate.cfg, topo.pubgate.git)
 
         # Should be back on main, orphan branch should be cleaned up
         current = topo.work_dir.run("rev-parse", "--abbrev-ref", "HEAD").strip()

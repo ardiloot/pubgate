@@ -1,6 +1,6 @@
 from dataclasses import dataclass
 
-__all__ = ["CommitInfo", "FileChange"]
+__all__ = ["CommitInfo", "FileChange", "format_commit"]
 
 
 @dataclass(frozen=True, slots=True)
@@ -32,3 +32,7 @@ class FileChange:
     @property
     def is_rename(self) -> bool:
         return self.status == "R"
+
+
+def format_commit(c: CommitInfo) -> str:
+    return f"{c.subject} ({c.sha[:7]}, {c.author}, {c.date})"
