@@ -77,6 +77,10 @@ class GitRepo:
     # Remote operations
     # ------------------------------------------------------------------
 
+    def get_remote_url(self, name: str) -> str:
+        result = self._run("remote", "get-url", name)
+        return result.stdout.strip()
+
     def ensure_remote(self, name: str, url: str | None) -> None:
         result = self._run("remote", "get-url", name, check=False)
         remote_exists = result.returncode == 0

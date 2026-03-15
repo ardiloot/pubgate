@@ -7,6 +7,7 @@ from .config import CONFIG_FILE, Config
 from .errors import GitError, PubGateError
 from .git import GitRepo
 from .models import CommitInfo
+from .pr import detect_provider
 from .stage_snapshot import build_stage_snapshot
 from .state import AbsorbStatus, StateRef
 
@@ -46,7 +47,7 @@ class PubGate:
     # Public commands
     # ------------------------------------------------------------------
 
-    def absorb(self, *, dry_run: bool = False, force: bool = False) -> None:
+    def absorb(self, *, dry_run: bool = False, force: bool = False, no_pr: bool = False) -> None:
         cfg, git = self.cfg, self.git
         public_main = cfg.public_main_ref
 
@@ -70,6 +71,16 @@ class PubGate:
 
             if dry_run:
                 logger.info("[dry-run] Would create branch, write tracking file, and commit")
+                self._handle_pr(
+                    remote="origin",
+                    head=cfg.absorb_pr_branch,
+                    base=cfg.internal_main_branch,
+                    title="",
+                    body="",
+                    host_label="your git host",
+                    no_pr=no_pr,
+                    dry_run=True,
+                )
                 return
 
             def _bootstrap_work() -> bool:
@@ -87,9 +98,16 @@ class PubGate:
                 work_fn=_bootstrap_work,
             )
             self._push_to_remote(cfg.absorb_pr_branch, "origin", cfg.absorb_pr_branch, force=force)
-            logger.info("Next steps:")
-            logger.info("  1. Create PR '%s → %s' on your git host", cfg.absorb_pr_branch, cfg.internal_main_branch)
-            logger.info("  2. Review and merge the PR")
+            title = f"pubgate: initialize absorb tracking at {public_head[:7]}"
+            self._handle_pr(
+                remote="origin",
+                head=cfg.absorb_pr_branch,
+                base=cfg.internal_main_branch,
+                title=title,
+                body="",
+                host_label="your git host",
+                no_pr=no_pr,
+            )
             return
 
         # NEEDS_ABSORB - normal absorb
@@ -123,11 +141,16 @@ class PubGate:
                 logger.info("  (no file changes)")
             logger.info("[dry-run] Would commit on %s", cfg.absorb_pr_branch)
             logger.info("[dry-run] Would push %s to origin/%s", cfg.absorb_pr_branch, cfg.absorb_pr_branch)
-            logger.info("Next steps:")
-            logger.info(
-                "  1. Create PR '%s \u2192 %s' on your git host", cfg.absorb_pr_branch, cfg.internal_main_branch
+            self._handle_pr(
+                remote="origin",
+                head=cfg.absorb_pr_branch,
+                base=cfg.internal_main_branch,
+                title="",
+                body="",
+                host_label="your git host",
+                no_pr=no_pr,
+                dry_run=True,
             )
-            logger.info("  2. Review and merge the PR")
             return
 
         def _absorb_work() -> bool:
@@ -154,11 +177,20 @@ class PubGate:
             work_fn=_absorb_work,
         )
         self._push_to_remote(cfg.absorb_pr_branch, "origin", cfg.absorb_pr_branch, force=force)
-        logger.info("Next steps:")
-        logger.info("  1. Create PR '%s → %s' on your git host", cfg.absorb_pr_branch, cfg.internal_main_branch)
-        logger.info("  2. Review and merge the PR")
+        full_msg = self._absorb_commit_message(last_absorbed, public_head)
+        title = full_msg.split("\n", 1)[0]
+        body = full_msg.split("\n", 1)[1].strip() if "\n" in full_msg else ""
+        self._handle_pr(
+            remote="origin",
+            head=cfg.absorb_pr_branch,
+            base=cfg.internal_main_branch,
+            title=title,
+            body=body,
+            host_label="your git host",
+            no_pr=no_pr,
+        )
 
-    def stage(self, *, dry_run: bool = False, force: bool = False) -> None:
+    def stage(self, *, dry_run: bool = False, force: bool = False, no_pr: bool = False) -> None:
         cfg, git = self.cfg, self.git
 
         self._stage_startup()
@@ -205,12 +237,17 @@ class PubGate:
         if dry_run:
             logger.info("[dry-run] Would commit on %s", cfg.stage_pr_branch)
             logger.info("[dry-run] Would push %s to origin/%s", cfg.stage_pr_branch, cfg.stage_pr_branch)
-            logger.info("Next steps:")
-            logger.info(
-                "  1. Create PR '%s \u2192 %s' on your git host", cfg.stage_pr_branch, cfg.internal_preview_branch
+            self._handle_pr(
+                remote="origin",
+                head=cfg.stage_pr_branch,
+                base=cfg.internal_preview_branch,
+                title="",
+                body="",
+                host_label="your git host",
+                extra_steps=["Run 'pubgate publish' (if ready)"],
+                no_pr=no_pr,
+                dry_run=True,
             )
-            logger.info("  2. Review and merge the PR")
-            logger.info("  3. Run 'pubgate publish' (if ready)")
             return
 
         self._ensure_public_branch()
@@ -244,12 +281,21 @@ class PubGate:
         )
         if committed:
             self._push_to_remote(cfg.stage_pr_branch, "origin", cfg.stage_pr_branch, force=force)
-            logger.info("Next steps:")
-            logger.info("  1. Create PR '%s → %s' on your git host", cfg.stage_pr_branch, cfg.internal_preview_branch)
-            logger.info("  2. Review and merge the PR")
-            logger.info("  3. Run 'pubgate publish' (if ready)")
+            full_msg = self._stage_commit_message(main_head, origin_preview_ref)
+            title = full_msg.split("\n", 1)[0]
+            body = full_msg.split("\n", 1)[1].strip() if "\n" in full_msg else ""
+            self._handle_pr(
+                remote="origin",
+                head=cfg.stage_pr_branch,
+                base=cfg.internal_preview_branch,
+                title=title,
+                body=body,
+                host_label="your git host",
+                extra_steps=["Run 'pubgate publish' (if ready)"],
+                no_pr=no_pr,
+            )
 
-    def publish(self, *, dry_run: bool = False, force: bool = False) -> None:
+    def publish(self, *, dry_run: bool = False, force: bool = False, no_pr: bool = False) -> None:
         cfg, git = self.cfg, self.git
         public_main = cfg.public_main_ref
 
@@ -318,12 +364,17 @@ class PubGate:
             logger.info(
                 "[dry-run] Would push %s to %s/%s", cfg.publish_pr_branch, cfg.public_remote, cfg.publish_pr_branch
             )
-            logger.info("Next steps:")
-            logger.info(
-                "  1. Create PR '%s \u2192 %s' on the public repo", cfg.publish_pr_branch, cfg.public_main_branch
+            self._handle_pr(
+                remote=cfg.public_remote,
+                head=cfg.publish_pr_branch,
+                base=cfg.public_main_branch,
+                title="",
+                body="",
+                host_label="the public repo",
+                extra_steps=["Run 'pubgate absorb' to sync tracking"],
+                no_pr=no_pr,
+                dry_run=True,
             )
-            logger.info("  2. Review and merge the PR")
-            logger.info("  3. Run 'pubgate absorb' to sync tracking")
             return
 
         def _publish_work() -> bool:
@@ -361,14 +412,91 @@ class PubGate:
             after_fn=_publish_push,
         )
         if committed:
-            logger.info("Next steps:")
-            logger.info("  1. Create PR '%s → %s' on the public repo", cfg.publish_pr_branch, cfg.public_main_branch)
-            logger.info("  2. Review and merge the PR")
-            logger.info("  3. Run 'pubgate absorb' to sync tracking")
+            subject = f"pubgate: publish stage from {main_sha[:7]}"
+            lines = []
+            if preview_commits:
+                lines.append(f"Included commits ({publish_log_base[:7]}..{origin_preview_ref}):")
+                lines.extend(f"  {i}. {_format_commit(c)}" for i, c in enumerate(preview_commits, 1))
+            body = "\n".join(lines)
+            self._handle_pr(
+                remote=cfg.public_remote,
+                head=cfg.publish_pr_branch,
+                base=cfg.public_main_branch,
+                title=subject,
+                body=body,
+                host_label="the public repo",
+                extra_steps=["Run 'pubgate absorb' to sync tracking"],
+                no_pr=no_pr,
+            )
 
     # ------------------------------------------------------------------
     # Shared workflow (private)
     # ------------------------------------------------------------------
+
+    def _log_manual_pr_steps(
+        self,
+        head: str,
+        base: str,
+        host_label: str,
+        extra_steps: list[str] | None = None,
+    ) -> None:
+        logger.info("Next steps:")
+        logger.info("  1. Create PR '%s → %s' on %s", head, base, host_label)
+        logger.info("  2. Review and merge the PR")
+        for i, step in enumerate(extra_steps or [], start=3):
+            logger.info("  %d. %s", i, step)
+
+    def _handle_pr(
+        self,
+        *,
+        remote: str,
+        head: str,
+        base: str,
+        title: str,
+        body: str,
+        host_label: str,
+        extra_steps: list[str] | None = None,
+        no_pr: bool,
+        dry_run: bool = False,
+    ) -> None:
+        if no_pr:
+            self._log_manual_pr_steps(head, base, host_label, extra_steps)
+            return
+
+        try:
+            remote_url = self.git.get_remote_url(remote)
+        except Exception:
+            self._log_manual_pr_steps(head, base, host_label, extra_steps)
+            return
+
+        provider = detect_provider(remote_url)
+        if provider is None:
+            self._log_manual_pr_steps(head, base, host_label, extra_steps)
+            return
+
+        if dry_run:
+            logger.info("[dry-run] Would create/update PR '%s → %s' automatically", head, base)
+            logger.info("Next steps:")
+            logger.info("  1. Review and merge the PR")
+            for i, step in enumerate(extra_steps or [], start=2):
+                logger.info("  %d. %s", i, step)
+            return
+
+        try:
+            result = provider.create_or_update_pr(head=head, base=base, title=title, body=body)
+        except Exception as exc:
+            logger.warning("Automatic PR creation failed: %s", exc)
+            self._log_manual_pr_steps(head, base, host_label, extra_steps)
+            return
+
+        if result.created:
+            logger.info("Created PR #%d: %s", result.number, result.url)
+        else:
+            logger.info("Updated PR #%d: %s", result.number, result.url)
+        logger.info("Next steps:")
+        logger.info("  1. Review and merge the PR")
+        for i, step in enumerate(extra_steps or [], start=2):
+            logger.info("  %d. %s", i, step)
 
     def _require_on_main(self) -> None:
         git, cfg = self.git, self.cfg
