@@ -233,6 +233,22 @@ class Topology:
         self.merge_internal_pr(self.cfg.stage_pr_branch, self.cfg.internal_preview_branch)
         self.work_dir.run("checkout", "main")
 
+    def publish_and_merge(self) -> None:
+        self.pubgate.publish()
+        self.work_dir.run("fetch", "public-remote")
+        self.merge_public_pr(self.cfg.publish_pr_branch, self.cfg.public_main_branch)
+        self.work_dir.run("checkout", "main")
+
+    def do_full_publish_cycle(self) -> None:
+        self.pubgate.stage()
+        self.merge_internal_pr(self.cfg.stage_pr_branch, self.cfg.internal_preview_branch)
+        self.work_dir.run("checkout", "main")
+        self.publish_and_merge()
+
+    def absorb_and_merge(self) -> None:
+        self.pubgate.absorb()
+        self.merge_internal_pr(self.cfg.absorb_pr_branch, "main")
+
 
 # ---------------------------------------------------------------------------
 # Fixture: topo

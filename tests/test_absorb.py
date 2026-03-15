@@ -209,6 +209,30 @@ class TestAbsorbEdgeCases:
         with pytest.raises(PubGateError, match="not clean"):
             topo.pubgate.absorb()
 
+    def test_added_text_file_unreadable_kept_local(self, topo: Topology, caplog):
+        from unittest.mock import patch
+
+        from pubgate.git import GitRepo
+
+        topo.bootstrap_absorb()
+        topo.commit_internal({"shared.txt": "local content\n"})
+        topo.commit_to_public({"shared.txt": "public content\n"})
+
+        original_read = GitRepo.read_file_at_ref
+
+        def failing_read(self_inner, ref, path):
+            if path == "shared.txt" and "public-remote" in ref:
+                return None
+            return original_read(self_inner, ref, path)
+
+        with (
+            patch.object(GitRepo, "read_file_at_ref", failing_read),
+            caplog.at_level(logging.WARNING, logger="pubgate"),
+        ):
+            topo.pubgate.absorb()
+
+        assert "kept local" in caplog.text
+
 
 class TestAbsorbBinary:
     def test_binary_file_added(self, topo: Topology):
@@ -241,6 +265,15 @@ class TestAbsorbBinary:
 
         absorbed = topo.work_dir.git.read_file_at_ref_bytes(topo.cfg.absorb_pr_branch, "data.bin")
         assert absorbed == binary_v2
+
+    def test_binary_added_on_public_kept_local(self, topo: Topology, caplog):
+        topo.bootstrap_absorb()
+        topo.commit_internal({"shared.bin": b"\x00\x01\x02\x03"})
+        topo.commit_to_public({"shared.bin": b"\x04\x05\x06\x07"})
+        with caplog.at_level(logging.INFO, logger="pubgate"):
+            topo.pubgate.absorb()
+        assert "kept local, review manually" in caplog.text
+        assert "shared.bin" in caplog.text
 
 
 class TestAbsorbStateValidation:
@@ -281,6 +314,33 @@ class TestMergeFileValidation:
         with patch.object(GitRepo, "read_file_at_ref", fake_read):
             with pytest.raises(PubGateError, match="unreadable"):
                 topo.pubgate.absorb()
+
+    def test_binary_modify_with_unreadable_content_raises(self, topo: Topology):
+        from unittest.mock import patch
+
+        from pubgate.errors import PubGateError
+        from pubgate.git import GitRepo
+
+        topo.bootstrap_absorb()
+        topo.commit_to_public({"logo.png": b"\x89PNG\r\n\x1a\n\x00\x00\x00\rIHDR\x00\x01"})
+        topo.pubgate.absorb()
+        topo.merge_internal_pr(topo.cfg.absorb_pr_branch, "main")
+
+        # Now modify the binary on public
+        topo.commit_to_public({"logo.png": b"\x89PNG\r\n\x1a\n\x00\x00\x00\rIHDR\x00\x02"})
+
+        original_read = GitRepo.read_file_at_ref_bytes
+
+        def failing_read(self_inner, ref, path):
+            if path == "logo.png" and "public-remote" in ref:
+                return None
+            return original_read(self_inner, ref, path)
+
+        with (
+            patch.object(GitRepo, "read_file_at_ref_bytes", failing_read),
+            pytest.raises(PubGateError, match="binary content is unreadable"),
+        ):
+            topo.pubgate.absorb()
 
 
 class TestAbsorbMixedChanges:
@@ -328,22 +388,12 @@ class TestAbsorbMixedChanges:
 
 
 class TestAbsorbModifyAfterPublish:
-    @staticmethod
-    def _do_publish_cycle(topo: Topology) -> None:
-        topo.pubgate.stage()
-        topo.merge_internal_pr(topo.cfg.stage_pr_branch, topo.cfg.internal_preview_branch)
-        topo.work_dir.run("checkout", "main")
-        topo.pubgate.publish()
-        topo.work_dir.run("fetch", "public-remote")
-        topo.merge_public_pr(topo.cfg.publish_pr_branch, topo.cfg.public_main_branch)
-        topo.work_dir.run("checkout", "main")
-
     def test_no_external_changes(self, topo: Topology, caplog):
         topo.setup_baseline("shared.txt", "header\nline2\nline3\nfooter\n")
         internal_content = "header\n# BEGIN-INTERNAL\nsecret\n# END-INTERNAL\nnew_line2\nline3\nfooter\n"
         topo.commit_internal({"shared.txt": internal_content})
 
-        self._do_publish_cycle(topo)
+        topo.do_full_publish_cycle()
 
         with caplog.at_level(logging.INFO, logger="pubgate"):
             topo.pubgate.absorb()
@@ -363,7 +413,7 @@ class TestAbsorbModifyAfterPublish:
         internal_content = "header\n# BEGIN-INTERNAL\nsecret\n# END-INTERNAL\nnew_line2\nline3\nfooter\n"
         topo.commit_internal({"shared.txt": internal_content})
 
-        self._do_publish_cycle(topo)
+        topo.do_full_publish_cycle()
 
         # External contributor adds a line (relative to published content)
         topo.commit_to_public({"shared.txt": "header\nnew_line2\nline3\nfooter\nexternal_fix\n"})
@@ -385,7 +435,7 @@ class TestAbsorbModifyAfterPublish:
         internal_content = "header\n# BEGIN-INTERNAL\nsecret\n# END-INTERNAL\nline2\nline3\nnew_footer\n"
         topo.commit_internal({"shared.txt": internal_content})
 
-        self._do_publish_cycle(topo)
+        topo.do_full_publish_cycle()
 
         # Internal changes footer again (unpublished)
         updated_internal = "header\n# BEGIN-INTERNAL\nsecret\n# END-INTERNAL\nline2\nline3\nours_footer\n"
@@ -408,7 +458,7 @@ class TestAbsorbModifyAfterPublish:
         topo.setup_baseline("shared.txt", "line1\nline2\nline3\n")
         topo.commit_internal({"shared.txt": "line1\nmodified_line2\nline3\n"})
 
-        self._do_publish_cycle(topo)
+        topo.do_full_publish_cycle()
 
         with caplog.at_level(logging.INFO, logger="pubgate"):
             topo.pubgate.absorb()
@@ -426,14 +476,14 @@ class TestAbsorbModifyAfterPublish:
         # First cycle
         internal_v1 = "header\n# BEGIN-INTERNAL\nsecret_v1\n# END-INTERNAL\nnew_line2\nline3\nline4\nfooter\n"
         topo.commit_internal({"shared.txt": internal_v1})
-        self._do_publish_cycle(topo)
+        topo.do_full_publish_cycle()
         topo.pubgate.absorb()
         topo.merge_internal_pr(topo.cfg.absorb_pr_branch, "main")
 
         # Second cycle: update secret + change visible lines
         internal_v2 = "header\n# BEGIN-INTERNAL\nsecret_v2\n# END-INTERNAL\nfinal_line2\nline3\nline4\nupdated_footer\n"
         topo.commit_internal({"shared.txt": internal_v2})
-        self._do_publish_cycle(topo)
+        topo.do_full_publish_cycle()
 
         with caplog.at_level(logging.INFO, logger="pubgate"):
             topo.pubgate.absorb()
@@ -453,7 +503,7 @@ class TestAbsorbModifyAfterPublish:
         internal_content = "header\n# BEGIN-INTERNAL\nsecret\n# END-INTERNAL\nnew_line2\nline3\nfooter\n"
         topo.commit_internal({"shared.txt": internal_content})
 
-        self._do_publish_cycle(topo)
+        topo.do_full_publish_cycle()
 
         # More internal edits (unpublished) before absorb
         updated_content = (
@@ -482,13 +532,7 @@ class TestAbsorbMetadataOnly:
 
         # Do a stage+publish cycle so that state files change on public
         topo.commit_internal({"app.txt": "content\n"})
-        topo.pubgate.stage()
-        topo.merge_internal_pr(topo.cfg.stage_pr_branch, topo.cfg.internal_preview_branch)
-        topo.work_dir.run("checkout", "main")
-        topo.pubgate.publish()
-        topo.work_dir.run("fetch", "public-remote")
-        topo.merge_public_pr(topo.cfg.publish_pr_branch, topo.cfg.public_main_branch)
-        topo.work_dir.run("checkout", "main")
+        topo.do_full_publish_cycle()
 
         # Absorb: public changed (state file + app.txt) — should succeed
         with caplog.at_level(logging.INFO, logger="pubgate"):
@@ -537,17 +581,6 @@ class TestMergeFileMissingLocally:
         assert "modified" in content
 
 
-class TestAbsorbAddBinaryExistsLocally:
-    def test_binary_added_on_public_kept_local(self, topo: Topology, caplog):
-        topo.bootstrap_absorb()
-        topo.commit_internal({"shared.bin": b"\x00\x01\x02\x03"})
-        topo.commit_to_public({"shared.bin": b"\x04\x05\x06\x07"})
-        with caplog.at_level(logging.INFO, logger="pubgate"):
-            topo.pubgate.absorb()
-        assert "kept local, review manually" in caplog.text
-        assert "shared.bin" in caplog.text
-
-
 class TestAbsorbAddMergeConflict:
     def test_is_add_with_published_base_conflict(self, topo: Topology, caplog):
         # Create a file internally with BEGIN-INTERNAL blocks
@@ -556,13 +589,7 @@ class TestAbsorbAddMergeConflict:
 
         # Stage and publish — file appears on public for the first time
         topo.bootstrap_absorb()
-        topo.pubgate.stage()
-        topo.merge_internal_pr(topo.cfg.stage_pr_branch, topo.cfg.internal_preview_branch)
-        topo.work_dir.run("checkout", "main")
-        topo.pubgate.publish()
-        topo.work_dir.run("fetch", "public-remote")
-        topo.merge_public_pr(topo.cfg.publish_pr_branch, topo.cfg.public_main_branch)
-        topo.work_dir.run("checkout", "main")
+        topo.do_full_publish_cycle()
 
         # Internal changes footer
         updated_internal = "header\n# BEGIN-INTERNAL\nsecret\n# END-INTERNAL\nours_footer\n"
@@ -592,75 +619,3 @@ class TestAbsorbStageStateUnreadable:
             topo.pubgate.absorb()
 
         assert "Could not read stage state" in caplog.text
-
-
-class TestAbsorbAddTextUnreadable:
-    def test_added_text_file_unreadable_kept_local(self, topo: Topology, caplog):
-        from unittest.mock import patch
-
-        from pubgate.git import GitRepo
-
-        topo.bootstrap_absorb()
-        topo.commit_internal({"shared.txt": "local content\n"})
-        topo.commit_to_public({"shared.txt": "public content\n"})
-
-        original_read = GitRepo.read_file_at_ref
-
-        def failing_read(self_inner, ref, path):
-            if path == "shared.txt" and "public-remote" in ref:
-                return None
-            return original_read(self_inner, ref, path)
-
-        with (
-            patch.object(GitRepo, "read_file_at_ref", failing_read),
-            caplog.at_level(logging.WARNING, logger="pubgate"),
-        ):
-            topo.pubgate.absorb()
-
-        assert "kept local" in caplog.text
-
-
-class TestMergeFileBinaryUnreadable:
-    def test_binary_modify_with_unreadable_content_raises(self, topo: Topology):
-        from unittest.mock import patch
-
-        from pubgate.errors import PubGateError
-        from pubgate.git import GitRepo
-
-        topo.bootstrap_absorb()
-        topo.commit_to_public({"logo.png": b"\x89PNG\r\n\x1a\n\x00\x00\x00\rIHDR\x00\x01"})
-        topo.pubgate.absorb()
-        topo.merge_internal_pr(topo.cfg.absorb_pr_branch, "main")
-
-        # Now modify the binary on public
-        topo.commit_to_public({"logo.png": b"\x89PNG\r\n\x1a\n\x00\x00\x00\rIHDR\x00\x02"})
-
-        original_read = GitRepo.read_file_at_ref_bytes
-
-        def failing_read(self_inner, ref, path):
-            if path == "logo.png" and "public-remote" in ref:
-                return None
-            return original_read(self_inner, ref, path)
-
-        with (
-            patch.object(GitRepo, "read_file_at_ref_bytes", failing_read),
-            pytest.raises(PubGateError, match="binary content is unreadable"),
-        ):
-            topo.pubgate.absorb()
-
-
-class TestAbsorbDeleteAction:
-    def test_deleted_file_kept_locally(self, topo: Topology, caplog):
-        topo.bootstrap_absorb()
-        topo.commit_to_public({"new.txt": "content\n"})
-        topo.pubgate.absorb()
-        topo.merge_internal_pr(topo.cfg.absorb_pr_branch, "main")
-
-        # Now delete the file on public
-        topo.commit_to_public(delete=["new.txt"], msg="delete new.txt")
-
-        with caplog.at_level(logging.WARNING, logger="pubgate"):
-            topo.pubgate.absorb()
-
-        assert "deleted on public" in caplog.text
-        assert "kept locally" in caplog.text

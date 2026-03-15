@@ -5,8 +5,8 @@ from pathlib import Path
 import pytest
 from conftest import Topology
 
-from pubgate.__main__ import main
-from pubgate.config import Config
+from pubgate.__main__ import build_parser, main
+from pubgate.config import Config, load_config
 from pubgate.errors import GitError, PubGateError
 from pubgate.git import GitRepo
 from pubgate.state import validate_state_sha
@@ -49,7 +49,6 @@ class TestBranchNameValidation:
             'internal_main_branch = "my branch"\n',
             encoding="utf-8",
         )
-        from pubgate.config import load_config
 
         with pytest.raises(PubGateError, match="invalid characters"):
             load_config(tmp_path)
@@ -100,14 +99,11 @@ class TestBranchNameCollision:
             'internal_main_branch = "main"\ninternal_preview_branch = "main"\n',
             encoding="utf-8",
         )
-        from pubgate.config import load_config
 
         with pytest.raises(PubGateError, match="share the same branch name"):
             load_config(tmp_path)
 
     def test_distinct_branch_names_pass(self):
-        from pubgate.config import Config
-
         # Default config has all distinct branch names
         cfg = Config()
         assert cfg.internal_main_branch != cfg.internal_preview_branch
@@ -123,14 +119,11 @@ class TestStateFileNameCollision:
             'stage_state_file = ".sync-state"\n',
             encoding="utf-8",
         )
-        from pubgate.config import load_config
 
         with pytest.raises(PubGateError, match="share the same filename"):
             load_config(tmp_path)
 
     def test_distinct_state_filenames_pass(self):
-        from pubgate.config import Config
-
         cfg = Config()
         assert cfg.absorb_state_file != cfg.stage_state_file
 
@@ -162,14 +155,11 @@ class TestReadFileAtRefErrors:
 
 class TestMissingConfig:
     def test_missing_pubgate_toml_raises(self, tmp_path: Path):
-        from pubgate.config import load_config
-
         with pytest.raises(PubGateError, match="No pubgate.toml found"):
             load_config(tmp_path)
 
     def test_unknown_key_rejected(self, tmp_path: Path):
         (tmp_path / "pubgate.toml").write_text('bogus_key = "value"\n', encoding="utf-8")
-        from pubgate.config import load_config
 
         with pytest.raises(PubGateError, match="Unknown keys"):
             load_config(tmp_path)
@@ -177,15 +167,11 @@ class TestMissingConfig:
 
 class TestRepoDirFlag:
     def test_repo_dir_parsed(self):
-        from pubgate.__main__ import build_parser
-
         args = build_parser().parse_args(["--repo-dir", "/some/path", "absorb"])
         assert args.repo_dir == "/some/path"
         assert args.command == "absorb"
 
     def test_repo_dir_default(self):
-        from pubgate.__main__ import build_parser
-
         args = build_parser().parse_args(["absorb"])
         assert args.repo_dir == "."
 
@@ -216,7 +202,6 @@ class TestMalformedToml:
         else:
             import tomli as tomllib  # type: ignore[import-untyped]
         (tmp_path / "pubgate.toml").write_text("key =\n", encoding="utf-8")
-        from pubgate.config import load_config
 
         with pytest.raises((PubGateError, tomllib.TOMLDecodeError)):
             load_config(tmp_path)
@@ -225,21 +210,18 @@ class TestMalformedToml:
 class TestConfigTypeValidation:
     def test_non_string_for_string_field(self, tmp_path: Path):
         (tmp_path / "pubgate.toml").write_text("public_url = 123\n", encoding="utf-8")
-        from pubgate.config import load_config
 
         with pytest.raises(PubGateError, match="must be a string"):
             load_config(tmp_path)
 
     def test_mixed_type_list_in_ignore(self, tmp_path: Path):
         (tmp_path / "pubgate.toml").write_text('ignore = ["*.txt", 123]\n', encoding="utf-8")
-        from pubgate.config import load_config
 
         with pytest.raises(PubGateError, match="must be a list of strings"):
             load_config(tmp_path)
 
     def test_non_list_for_ignore(self, tmp_path: Path):
         (tmp_path / "pubgate.toml").write_text('ignore = "not-a-list"\n', encoding="utf-8")
-        from pubgate.config import load_config
 
         with pytest.raises(PubGateError, match="must be a list of strings"):
             load_config(tmp_path)
@@ -330,34 +312,6 @@ class TestFindCommitIntroducing:
         assert result == new_head
 
 
-class TestOnBranchCleanupExceptionLogging:
-    def test_cleanup_failure_still_raises_original(self, topo: Topology, caplog):
-        from unittest.mock import patch
-
-        topo.work_dir.run("branch", "test-cleanup", "main")
-        original_run = topo.work_dir.git._run
-
-        call_count = 0
-
-        def failing_cleanup(self_inner, *args, **kwargs):
-            nonlocal call_count
-            call_count += 1
-            # Let checkout to branch succeed, but fail on cleanup reset
-            if "reset" in args:
-                raise RuntimeError("cleanup failed")
-            return original_run(*args, **kwargs)
-
-        with pytest.raises(ValueError, match="test error"):
-            with topo.work_dir.git.on_branch("test-cleanup"):
-                # Patch _run to fail on reset during cleanup
-                with patch.object(type(topo.work_dir.git), "_run", failing_cleanup):
-                    raise ValueError("test error")
-
-        # Should be back on main despite cleanup failure
-        current = topo.work_dir.run("rev-parse", "--abbrev-ref", "HEAD").strip()
-        assert current == "main"
-
-
 class TestMainEnsureRemoteFailure:
     def test_main_exits_on_ensure_remote_failure(self, tmp_path: Path):
         # Set up a git repo with a config that references a non-existent remote
@@ -372,19 +326,3 @@ class TestMainEnsureRemoteFailure:
         with pytest.raises(SystemExit) as exc:
             main(["--repo-dir", str(tmp_path), "absorb"])
         assert exc.value.code == 1
-
-
-class TestStageBinarySnapshotComparison:
-    def test_binary_file_change_detected_in_snapshot(self, topo: Topology):
-        topo.bootstrap_absorb()
-        topo.commit_internal({"asset.bin": b"\x00\x01\x02"})
-        topo.pubgate.stage()
-        topo.merge_internal_pr(topo.cfg.stage_pr_branch, topo.cfg.internal_preview_branch)
-        topo.work_dir.run("checkout", "main")
-
-        # Change the binary content
-        topo.commit_internal({"asset.bin": b"\x03\x04\x05"})
-        # Stage should detect the change and proceed
-        topo.pubgate.stage(force=True)
-        staged = topo.work_dir.git.read_file_at_ref_bytes(topo.cfg.stage_pr_branch, "asset.bin")
-        assert staged == b"\x03\x04\x05"

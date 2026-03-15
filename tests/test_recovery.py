@@ -1,3 +1,5 @@
+from unittest.mock import patch
+
 import pytest
 from conftest import Topology
 
@@ -43,3 +45,29 @@ class TestAbsorbRecovery:
         topo.pubgate.absorb()
         # Second run re-creates the branch (needs --force since PR wasn't merged)
         topo.pubgate.absorb(force=True)
+
+
+class TestOnBranchCleanupExceptionLogging:
+    def test_cleanup_failure_still_raises_original(self, topo: Topology, caplog):
+        topo.work_dir.run("branch", "test-cleanup", "main")
+        original_run = topo.work_dir.git._run
+
+        call_count = 0
+
+        def failing_cleanup(self_inner, *args, **kwargs):
+            nonlocal call_count
+            call_count += 1
+            # Let checkout to branch succeed, but fail on cleanup reset
+            if "reset" in args:
+                raise RuntimeError("cleanup failed")
+            return original_run(*args, **kwargs)
+
+        with pytest.raises(ValueError, match="test error"):
+            with topo.work_dir.git.on_branch("test-cleanup"):
+                # Patch _run to fail on reset during cleanup
+                with patch.object(type(topo.work_dir.git), "_run", failing_cleanup):
+                    raise ValueError("test error")
+
+        # Should be back on main despite cleanup failure
+        current = topo.work_dir.run("rev-parse", "--abbrev-ref", "HEAD").strip()
+        assert current == "main"

@@ -1,5 +1,4 @@
 import logging
-import subprocess
 
 import pytest
 from conftest import SAMPLE_LATIN1, SAMPLE_PNG, Topology
@@ -240,16 +239,8 @@ class TestStageBranchGuard:
 class TestStageSkipsStateOnly:
     def test_skips_when_only_absorb_state_changed(self, topo: Topology, caplog):
         topo.stage_and_merge()
-        topo.pubgate.publish()
-
-        # Merge the public PR
-        topo.work_dir.run("fetch", "public-remote")
-        topo.merge_public_pr(topo.cfg.publish_pr_branch, "main")
-
-        # Absorb catches up (updates .pubgate-state-absorb)
-        topo.work_dir.run("checkout", "main")
-        topo.pubgate.absorb()
-        topo.merge_internal_pr(topo.cfg.absorb_pr_branch, "main")
+        topo.publish_and_merge()
+        topo.absorb_and_merge()
 
         # Stage should see no content changes and skip
         with caplog.at_level(logging.INFO, logger="pubgate"):
@@ -258,16 +249,8 @@ class TestStageSkipsStateOnly:
 
     def test_proceeds_when_state_and_content_changed(self, topo: Topology):
         topo.stage_and_merge()
-        topo.pubgate.publish()
-
-        # Merge the public PR
-        topo.work_dir.run("fetch", "public-remote")
-        topo.merge_public_pr(topo.cfg.publish_pr_branch, "main")
-
-        # Absorb catches up
-        topo.work_dir.run("checkout", "main")
-        topo.pubgate.absorb()
-        topo.merge_internal_pr(topo.cfg.absorb_pr_branch, "main")
+        topo.publish_and_merge()
+        topo.absorb_and_merge()
 
         # Make a real content change
         topo.commit_internal({"new-feature.txt": "feature code\n"})
@@ -288,12 +271,8 @@ class TestStageLogOnelineException:
         topo.stage_and_merge()
 
         # Publish + absorb to complete the cycle, then make a new change
-        topo.pubgate.publish()
-        topo.work_dir.run("fetch", "public-remote")
-        topo.merge_public_pr(topo.cfg.publish_pr_branch, topo.cfg.public_main_branch)
-        topo.work_dir.run("checkout", "main")
-        topo.pubgate.absorb()
-        topo.merge_internal_pr(topo.cfg.absorb_pr_branch, "main")
+        topo.publish_and_merge()
+        topo.absorb_and_merge()
         topo.commit_internal({"v2.txt": "version 2\n"})
 
         call_count = 0
@@ -352,20 +331,14 @@ class TestEnsurePublicBranchCleanup:
 
         # Ensure public-preview doesn't exist on origin (may not have been created yet)
         # Delete the remote tracking ref if it exists
-        result = subprocess.run(
-            ["git", "-C", str(topo.work_dir.path), "rev-parse", "--verify", "refs/remotes/origin/public-preview"],
-            capture_output=True,
-            text=True,
-        )
-        if result.returncode == 0:
+        # Ensure public-preview doesn't exist on origin (may not have been created yet)
+        try:
+            topo.work_dir.run("rev-parse", "--verify", "refs/remotes/origin/public-preview")
             topo.work_dir.run("push", "origin", "--delete", "public-preview")
+        except Exception:
+            pass
         # Also delete local branch if it exists
-        result2 = subprocess.run(
-            ["git", "-C", str(topo.work_dir.path), "rev-parse", "--verify", "refs/heads/public-preview"],
-            capture_output=True,
-            text=True,
-        )
-        if result2.returncode == 0:
+        if topo.work_dir.git.branch_exists("public-preview"):
             topo.work_dir.run("branch", "-D", "public-preview")
         topo.work_dir.fetch("origin")
 
@@ -393,3 +366,19 @@ class TestScrubResidualMarkerInStage:
 
         with pytest.raises(PubGateError, match="unclosed BEGIN-INTERNAL"):
             topo.pubgate.stage()
+
+
+class TestStageBinarySnapshotComparison:
+    def test_binary_file_change_detected_in_snapshot(self, topo: Topology):
+        topo.bootstrap_absorb()
+        topo.commit_internal({"asset.bin": b"\x00\x01\x02"})
+        topo.pubgate.stage()
+        topo.merge_internal_pr(topo.cfg.stage_pr_branch, topo.cfg.internal_preview_branch)
+        topo.work_dir.run("checkout", "main")
+
+        # Change the binary content
+        topo.commit_internal({"asset.bin": b"\x03\x04\x05"})
+        # Stage should detect the change and proceed
+        topo.pubgate.stage(force=True)
+        staged = topo.work_dir.git.read_file_at_ref_bytes(topo.cfg.stage_pr_branch, "asset.bin")
+        assert staged == b"\x03\x04\x05"
