@@ -25,22 +25,22 @@ pubgate sidesteps this: staging is always a snapshot (current state, mechanicall
 ## Commands
 
 - `absorb` = bring public repo changes into internal `main` via internal PR
-- `stage` = generate public stage candidate and open an internal PR into `public-preview`
-- `publish` = push reviewed internal `public-preview` content to a branch on the public repo and open or update a PR to public `main`
+- `stage` = generate public stage candidate and open an internal PR into `pubgate/public-approved`
+- `publish` = push reviewed internal `pubgate/public-approved` content to a branch on the public repo and open or update a PR to public `main`
 
 ## Branches and tracking
 
 | Branch | Purpose |
 |--------|---------|
 | `main` | Internal development |
-| `public-preview` | Internal preview branch containing reviewed staged content meant for the public repo |
+| `pubgate/public-approved` | Internal branch containing reviewed staged content approved for the public repo |
 | `pubgate/absorb` | Temp: absorb PR branch in internal repo |
 | `pubgate/stage` | Temp: stage PR branch in internal repo |
 | `pubgate/publish` | Temp: stage PR branch on the public repo |
 
 Use two independent tracking files:
-- `.pubgate-state-absorb` on `main` = last absorbed `public-remote/main` hash; also included in the staged snapshot by `stage`, so it appears on `public-preview` and the public repo as the absorbed baseline at staging time
-- `.pubgate-state-stage` on `public-preview` content = last staged `main` hash for external publication
+- `.pubgate-state-absorb` on `main` = last absorbed `public-remote/main` hash; also included in the staged snapshot by `stage`, so it appears on `pubgate/public-approved` and the public repo as the absorbed baseline at staging time
+- `.pubgate-state-stage` on `pubgate/public-approved` content = last staged `main` hash for external publication
 
 These states are independent and should not share meaning implicitly by branch.
 - Outbound tracking stays with the published content
@@ -49,7 +49,7 @@ These states are independent and should not share meaning implicitly by branch.
 
 ## Per-command startup
 
-Each command runs its own startup sequence before command-specific logic. `--dry-run` still runs the full startup. Stage and publish read `origin/public-preview` (the remote tracking ref, not the local branch) to guarantee freshness after an stage PR is merged on the server.
+Each command runs its own startup sequence before command-specific logic. `--dry-run` still runs the full startup. Stage and publish read `origin/pubgate/public-approved` (the remote tracking ref, not the local branch) to guarantee freshness after an stage PR is merged on the server.
 
 ### `absorb` startup
 
@@ -77,7 +77,7 @@ Each command runs its own startup sequence before command-specific logic. `--dry
 ### `publish` startup
 
 1. Ensure clean worktree - abort if uncommitted changes
-2. Fetch `origin` (with `--prune`), needed to read `origin/public-preview`
+2. Fetch `origin` (with `--prune`), needed to read `origin/pubgate/public-approved`
 3. Fetch `public-remote` (with `--prune`)
 4. Prune stale public PR branch (`pubgate/publish`): if the local branch exists but its remote counterpart on `public-remote` was deleted, delete the local branch
 
@@ -90,19 +90,19 @@ Each command runs its own startup sequence before command-specific logic. `--dry
 5. Compute the inbound result, applying the per-file merge/copy/delete rules as needed, and update `.pubgate-state-absorb`; deleted public files are left in place and reported for manual review in the PR; when only state files changed since last absorb, the resulting PR only updates `.pubgate-state-absorb` (tracking-only)
 6. Commit the result and open or update the internal PR into `main`; the commit message lists the public commits being absorbed (safe, they are already public); internal CI must pass before merge
 
-## `stage` (internal -> internal `public-preview` review) -- semi-automated
+## `stage` (internal -> internal `pubgate/public-approved` review) -- semi-automated
 
 1. Run stage startup; error if `main:.pubgate-state-absorb` is missing
-2. Build the stage candidate from `main` by excluding internal files that must not be published and scrubbing `BEGIN-INTERNAL`/`END-INTERNAL`. Built-in default ignore patterns cover common naming conventions (`.internal/*`, `*-internal.*`, `*.internal.*`, `*.secret`, etc.); users can override them via `ignore` in `pubgate.toml`. `.pubgate-state-absorb` is included in the snapshot naturally (not excluded), and `.pubgate-state-stage` is set to `main` HEAD; if the result does not differ from `origin/public-preview`, exit
-3. Create or update `pubgate/stage` from `origin/public-preview`
-4. Commit the staged result to `pubgate/stage` and open or update the internal PR (`pubgate/stage` → `public-preview`); the commit message lists the internal commits since the last stage (safe, stays on the internal repo, useful context for the leak reviewer); internal review here is the leak-check gate before anything is pushed to the public repo
+2. Build the stage candidate from `main` by excluding internal files that must not be published and scrubbing `BEGIN-INTERNAL`/`END-INTERNAL`. Built-in default ignore patterns cover common naming conventions (`.internal/*`, `*-internal.*`, `*.internal.*`, `*.secret`, etc.); users can override them via `ignore` in `pubgate.toml`. `.pubgate-state-absorb` is included in the snapshot naturally (not excluded), and `.pubgate-state-stage` is set to `main` HEAD; if the result does not differ from `origin/pubgate/public-approved`, exit
+3. Create or update `pubgate/stage` from `origin/pubgate/public-approved`
+4. Commit the staged result to `pubgate/stage` and open or update the internal PR (`pubgate/stage` → `pubgate/public-approved`); the commit message lists the internal commits since the last stage (safe, stays on the internal repo, useful context for the leak reviewer); internal review here is the leak-check gate before anything is pushed to the public repo
 
-## `publish` (internal `public-preview` -> public repo branch -> public PR) -- semi-automated
+## `publish` (internal `pubgate/public-approved` -> public repo branch -> public PR) -- semi-automated
 
 1. Run publish startup
-2. If `origin/public-preview:.pubgate-state-stage` is missing → error ("run `stage` and merge the internal PR first")
-3. If `public-remote/main:.pubgate-state-stage` exists and equals `origin/public-preview:.pubgate-state-stage` → exit (already delivered or nothing pending for public delivery)
-4. Read the absorbed baseline from `origin/public-preview:.pubgate-state-absorb`; create or update branch `pubgate/publish` based on this absorbed commit, replacing all content with the current content of `origin/public-preview`
+2. If `origin/pubgate/public-approved:.pubgate-state-stage` is missing → error ("run `stage` and merge the internal PR first")
+3. If `public-remote/main:.pubgate-state-stage` exists and equals `origin/pubgate/public-approved:.pubgate-state-stage` → exit (already delivered or nothing pending for public delivery)
+4. Read the absorbed baseline from `origin/pubgate/public-approved:.pubgate-state-absorb`; create or update branch `pubgate/publish` based on this absorbed commit, replacing all content with the current content of `origin/pubgate/public-approved`
 5. Open or update public PR (`pubgate/publish` → `main`); public CI must pass before merge
 6. Done; after the public PR is merged, the user may run `absorb` so `.pubgate-state-absorb` catches up to the new `public-remote/main` commit (recommended but not required before the next `stage`/`publish` cycle)
 
@@ -121,10 +121,10 @@ The result is that divergence between the two repos is always controlled and bou
 - Python stdlib + git CLI, hosting-agnostic
 - Inbound review happens in the internal repo
 - Outbound has two gates:
-  - internal PR into `public-preview` to catch leaks before any public push
+  - internal PR into `pubgate/public-approved` to catch leaks before any public push
   - public PR into `main` to run public CI before merge
 - `absorb` only modifies internal `main`
-- `stage` is the only command that modifies internal `public-preview`
+- `stage` is the only command that modifies internal `pubgate/public-approved`
 - `publish` only modifies public-repo-side branches/PRs
 - `main` and public `main` stay protected by their destination CI gates
 - Outbound: snapshot (no drift). Inbound: three-way merge (base from public history)
@@ -135,7 +135,7 @@ The result is that divergence between the two repos is always controlled and bou
 - Initial setup manual
 - Each command has a planning phase and an execution phase; `--dry-run` shows the planned actions without changing branches, files, or PRs (still runs the full per-command startup)
 - PR creation is automatic when a supported hosting provider is detected (currently GitHub via the `gh` CLI). If the remote URL is not a supported provider, or `gh` is not installed/authenticated, commands log manual PR creation steps instead. Use `--no-pr` to disable automatic PR creation. Run `gh auth login` to set up authentication
-- Each command has its own startup sequence tailored to the remotes it interacts with: `absorb` fetches both remotes and verifies `main` is synced; `stage` fetches only `origin` and verifies `main` is synced; `publish` fetches both `origin` (for `origin/public-preview`) and `public-remote` but does not require being on `main`
+- Each command has its own startup sequence tailored to the remotes it interacts with: `absorb` fetches both remotes and verifies `main` is synced; `stage` fetches only `origin` and verifies `main` is synced; `publish` fetches both `origin` (for `origin/pubgate/public-approved`) and `public-remote` but does not require being on `main`
 - Branch guard: before creating a PR branch, each command checks whether the branch already exists. If it does (previous PR not merged), the command errors out. Use `--force` to overwrite the existing branch and proceed. After a PR is merged and the server auto-deletes the source branch, the next startup prune removes the stale local branch automatically
 
 ## Known limitations

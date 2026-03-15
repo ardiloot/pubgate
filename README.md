@@ -36,7 +36,7 @@ The two workflows:
 flowchart TD
     A["🔒 main (internal)"]
     A -->|"stage"| B["🔒 pubgate/stage (internal)"]
-    B -->|"PR · leak review"| C["🔒 public-preview (internal)"]
+    B -->|"PR · leak review"| C["🔒 pubgate/public-approved (internal)"]
     C ==>|"publish"| D["🌐 pubgate/publish (public)"]
     D -->|"PR · publish check"| E["🌐 main (public)"]
 
@@ -110,6 +110,7 @@ flowchart TD
    pubgate absorb
    ```
    On first run, this records the current public repo HEAD as the starting point for future syncs. It creates a PR branch that records this baseline in a tracking file (`.pubgate-state-absorb`). Create a PR from that branch into `main` on your git host and merge it.
+6. After your first `pubgate stage` run creates the `pubgate/public-approved` branch, protect it on your git host: require pull requests (no direct pushes) and optionally require approvals. This ensures content only reaches the approved branch through reviewed PRs — the leak-review gate.
 
 ## Workflow
 
@@ -119,7 +120,7 @@ pubgate prepares branches for review. When the `gh` CLI is available and the rem
 
 1. Recommended: run `pubgate absorb` if the public repo has unabsorbed changes, then merge the absorb PR. This isn't required (`stage` and `publish` proceed either way) but it keeps the public snapshot clean.
 2. Run `pubgate stage`. This creates a `pubgate/stage` branch with the filtered snapshot for leak review.
-3. Review the PR from `pubgate/stage` → `public-preview` (created automatically on GitHub, or create it manually on other hosts). This is the leak-review gate. Review it to ensure no internal code is exposed. Merge when satisfied.
+3. Review the PR from `pubgate/stage` → `pubgate/public-approved` (created automatically on GitHub, or create it manually on other hosts). This is the leak-review gate. Review it to ensure no internal code is exposed. Merge when satisfied.
 4. Run `pubgate publish`. This delivers the reviewed content to the public repo as a `pubgate/publish` branch.
 5. Review the PR from `pubgate/publish` → `main` on the public repo (created automatically on GitHub, or create it manually). Merge after CI passes.
 
@@ -138,8 +139,8 @@ Run when the public repo has external contributions that need to be brought into
 
 Making changes public (absorb → stage → publish):
 - **`main`** (internal): internal development branch (protected)
-- **`pubgate/stage`** (internal): branch for leak review: filtered internal content → `public-preview`
-- **`public-preview`** (internal): holds reviewed staged content; created automatically on first `stage` if it doesn't exist
+- **`pubgate/stage`** (internal): branch for leak review: filtered internal content → `pubgate/public-approved`
+- **`pubgate/public-approved`** (internal): holds reviewed staged content approved for publication; created automatically on first `stage` if it doesn't exist. **Protect this branch** on your git host — require PRs (no direct pushes), and optionally require approvals. This is the leak-review gate: only content that passes PR review should land here.
 - **`pubgate/publish`** (public): branch for publish review: reviewed content → public `main`
 - **`main`** (public): public-facing branch (protected)
 
@@ -149,7 +150,7 @@ Incorporating public contributions (absorb):
 **State files**
 
 - `.pubgate-state-absorb` (on `main`): tracks which public commit was last absorbed
-- `.pubgate-state-stage` (on `public-preview`): tracks which internal commit was last staged
+- `.pubgate-state-stage` (on `pubgate/public-approved`): tracks which internal commit was last staged
 
 Created and updated automatically.
 
@@ -166,7 +167,7 @@ Flags `--dry-run` and `--force` come after the command. `--repo-dir` comes befor
 | Flag | Position | Description |
 |------|----------|-------------|
 | `--dry-run` | after command | Show planned actions without writing branches or files. Still syncs with remotes to ensure accurate plans. Example: `pubgate stage --dry-run` |
-| `--force` | after command | Overwrite an existing PR branch from a previous run whose PR was not yet merged. Without this flag, pubgate errors out if the PR branch already exists. Force-push is blocked on protected branches (`main`, `public-preview`, and public `main`). Example: `pubgate absorb --force` |
+| `--force` | after command | Overwrite an existing PR branch from a previous run whose PR was not yet merged. Without this flag, pubgate errors out if the PR branch already exists. Force-push is blocked on protected branches (`main`, `pubgate/public-approved`, and public `main`). Example: `pubgate absorb --force` |
 | `--no-pr` | after command | Skip automatic PR creation even when `gh` CLI is available. pubgate will still push the branch and log manual steps. Example: `pubgate stage --no-pr` |
 | `--repo-dir` | before command | Run pubgate against a specific repo path instead of the current directory. Example: `pubgate --repo-dir /path/to/repo stage` |
 
@@ -177,17 +178,15 @@ Full `pubgate.toml` example (all fields shown with defaults, only `public_url` i
 ```toml
 # Internal repo
 internal_main_branch = "main"
-internal_preview_branch = "public-preview"
+internal_approved_branch = "pubgate/public-approved"
+internal_absorb_branch = "pubgate/absorb"
+internal_stage_branch = "pubgate/stage"
 
 # Public repo (public_url is required if the git remote isn't already configured)
 public_url = "https://github.com/you/public-repo.git"
 public_remote = "public-remote"
 public_main_branch = "main"
-publish_pr_branch = "pubgate/publish"
-
-# Sync branches (internal repo)
-absorb_pr_branch = "pubgate/absorb"
-stage_pr_branch = "pubgate/stage"
+public_publish_branch = "pubgate/publish"
 
 # State tracking
 absorb_state_file = ".pubgate-state-absorb"
@@ -257,7 +256,7 @@ pubgate absorb
 # 4. Stage staged content (filters out internal files and scrubs markers)
 pubgate stage
 # Output: pushes pubgate/stage branch
-# → PR: pubgate/stage → public-preview (auto-created on GitHub)
+# → PR: pubgate/stage → pubgate/public-approved (auto-created on GitHub)
 # → Review for leaks, merge it
 
 # 5. Publish to public repo

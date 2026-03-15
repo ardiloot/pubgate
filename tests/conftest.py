@@ -204,7 +204,7 @@ class Topology:
     def setup_baseline(self, filename: str, content: str) -> None:
         self.commit_to_public({filename: content})
         self.pubgate.absorb()
-        self.merge_internal_pr(self.cfg.absorb_pr_branch, "main")
+        self.merge_internal_pr(self.cfg.internal_absorb_branch, "main")
 
     def merge_internal_pr(self, branch: str, into: str) -> None:
         # Push target branch to origin if it doesn't exist (for orphan branches)
@@ -225,29 +225,29 @@ class Topology:
 
     def bootstrap_absorb(self) -> None:
         self.pubgate.absorb()
-        self.merge_internal_pr(self.cfg.absorb_pr_branch, "main")
+        self.merge_internal_pr(self.cfg.internal_absorb_branch, "main")
 
     def stage_and_merge(self) -> None:
         self.bootstrap_absorb()
         self.pubgate.stage()
-        self.merge_internal_pr(self.cfg.stage_pr_branch, self.cfg.internal_preview_branch)
+        self.merge_internal_pr(self.cfg.internal_stage_branch, self.cfg.internal_approved_branch)
         self.work_dir.run("checkout", "main")
 
     def publish_and_merge(self) -> None:
         self.pubgate.publish()
         self.work_dir.run("fetch", "public-remote")
-        self.merge_public_pr(self.cfg.publish_pr_branch, self.cfg.public_main_branch)
+        self.merge_public_pr(self.cfg.public_publish_branch, self.cfg.public_main_branch)
         self.work_dir.run("checkout", "main")
 
     def do_full_publish_cycle(self) -> None:
         self.pubgate.stage()
-        self.merge_internal_pr(self.cfg.stage_pr_branch, self.cfg.internal_preview_branch)
+        self.merge_internal_pr(self.cfg.internal_stage_branch, self.cfg.internal_approved_branch)
         self.work_dir.run("checkout", "main")
         self.publish_and_merge()
 
     def absorb_and_merge(self) -> None:
         self.pubgate.absorb()
-        self.merge_internal_pr(self.cfg.absorb_pr_branch, "main")
+        self.merge_internal_pr(self.cfg.internal_absorb_branch, "main")
 
 
 # ---------------------------------------------------------------------------

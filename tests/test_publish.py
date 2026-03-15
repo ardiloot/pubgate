@@ -12,7 +12,7 @@ class TestPublishBasic:
         topo.pubgate.publish()
 
         topo.work_dir.run("fetch", "public-remote")
-        pr_ref = f"public-remote/{topo.cfg.publish_pr_branch}"
+        pr_ref = f"public-remote/{topo.cfg.public_publish_branch}"
 
         files = topo.work_dir.list_files_at_ref(pr_ref)
         assert "file1.txt" in files
@@ -32,13 +32,13 @@ class TestPublishGuards:
     def test_guard_no_stage_state(self, topo: Topology):
         # Bootstrap absorb so public branch doesn't exist yet
         topo.pubgate.absorb()
-        topo.merge_internal_pr(topo.cfg.absorb_pr_branch, "main")
+        topo.merge_internal_pr(topo.cfg.internal_absorb_branch, "main")
         with pytest.raises(PubGateError, match="stage"):
             topo.pubgate.publish()
 
     def test_guard_internal_pr_not_merged(self, topo: Topology):
         topo.pubgate.absorb()
-        topo.merge_internal_pr(topo.cfg.absorb_pr_branch, "main")
+        topo.merge_internal_pr(topo.cfg.internal_absorb_branch, "main")
         topo.pubgate.stage()
         # Don't merge the stage PR - public branch has no stage state
         with pytest.raises(PubGateError, match="stage"):
@@ -86,7 +86,7 @@ class TestPublishFullCycle:
         topo.stage_and_merge()
 
         # Verify staging stripped the internal block
-        staged = topo.work_dir.read_file_at_ref(f"origin/{topo.cfg.internal_preview_branch}", "app.py")
+        staged = topo.work_dir.read_file_at_ref(f"origin/{topo.cfg.internal_approved_branch}", "app.py")
         assert staged is not None
         assert "BEGIN-INTERNAL" not in staged
         assert "secret()" not in staged
@@ -102,7 +102,7 @@ class TestPublishFullCycle:
         assert "kept local version" not in caplog.text
         assert "CONFLICTS" not in caplog.text
 
-        absorbed = topo.work_dir.read_file_at_ref(topo.cfg.absorb_pr_branch, "app.py")
+        absorbed = topo.work_dir.read_file_at_ref(topo.cfg.internal_absorb_branch, "app.py")
         assert absorbed is not None
         assert "BEGIN-INTERNAL" in absorbed
         assert "secret()" in absorbed
@@ -124,7 +124,7 @@ class TestPublishFullCycle:
             topo.pubgate.absorb()
 
         assert "merge (clean): app.py" in caplog.text
-        absorbed = topo.work_dir.read_file_at_ref(topo.cfg.absorb_pr_branch, "app.py")
+        absorbed = topo.work_dir.read_file_at_ref(topo.cfg.internal_absorb_branch, "app.py")
         assert absorbed is not None
         assert "BEGIN-INTERNAL" in absorbed
         assert "secret" in absorbed
@@ -143,7 +143,7 @@ class TestPublishFullCycle:
             topo.pubgate.absorb()
 
         assert "merge (clean)" in caplog.text
-        absorbed = topo.work_dir.read_file_at_ref(topo.cfg.absorb_pr_branch, "app.py")
+        absorbed = topo.work_dir.read_file_at_ref(topo.cfg.internal_absorb_branch, "app.py")
         assert absorbed is not None
         assert "BEGIN-INTERNAL" in absorbed
         assert "secret" in absorbed
@@ -167,7 +167,7 @@ class TestPublishFullCycle:
             topo.pubgate.absorb()
 
         assert "merge (clean)" in caplog.text
-        absorbed = topo.work_dir.read_file_at_ref(topo.cfg.absorb_pr_branch, "app.py")
+        absorbed = topo.work_dir.read_file_at_ref(topo.cfg.internal_absorb_branch, "app.py")
         assert absorbed is not None
         assert "CHANGED_LINE1" in absorbed
         assert "BEGIN-INTERNAL" in absorbed
@@ -184,7 +184,7 @@ class TestPublishFullCycle:
             topo.pubgate.absorb()
 
         assert "merge (clean): plain.txt" in caplog.text
-        absorbed = topo.work_dir.read_file_at_ref(topo.cfg.absorb_pr_branch, "plain.txt")
+        absorbed = topo.work_dir.read_file_at_ref(topo.cfg.internal_absorb_branch, "plain.txt")
         assert absorbed is not None
         assert absorbed.strip() == "line1\nline2"
 
@@ -205,7 +205,7 @@ class TestPublishFullCycle:
             topo.pubgate.absorb()
 
         assert "CONFLICTS" in caplog.text
-        absorbed = topo.work_dir.read_file_at_ref(topo.cfg.absorb_pr_branch, "app.py")
+        absorbed = topo.work_dir.read_file_at_ref(topo.cfg.internal_absorb_branch, "app.py")
         assert absorbed is not None
         assert "<<<<<<" in absorbed
         assert "INTERNAL_CHANGE" in absorbed
@@ -239,7 +239,7 @@ class TestPublishFullCycle:
             topo.pubgate.absorb()
 
         assert "merge (clean): app.py" in caplog.text
-        absorbed = topo.work_dir.read_file_at_ref(topo.cfg.absorb_pr_branch, "app.py")
+        absorbed = topo.work_dir.read_file_at_ref(topo.cfg.internal_absorb_branch, "app.py")
         assert absorbed is not None
         assert "footer_updated" in absorbed
         assert "secret_v2" in absorbed
@@ -262,7 +262,7 @@ class TestPublishFullCycle:
 
         # staged_sha exists but new_local.txt wasn't at that commit → fallback
         assert "kept local" in caplog.text
-        absorbed = topo.work_dir.read_file_at_ref(topo.cfg.absorb_pr_branch, "new_local.txt")
+        absorbed = topo.work_dir.read_file_at_ref(topo.cfg.internal_absorb_branch, "new_local.txt")
         assert absorbed is not None
         assert "local only content" in absorbed
 
@@ -276,7 +276,9 @@ class TestPublishBinary:
         topo.pubgate.publish()
 
         topo.work_dir.run("fetch", "public-remote")
-        published = topo.work_dir.git.read_file_at_ref_bytes(f"public-remote/{topo.cfg.publish_pr_branch}", "asset.png")
+        published = topo.work_dir.git.read_file_at_ref_bytes(
+            f"public-remote/{topo.cfg.public_publish_branch}", "asset.png"
+        )
         assert published == SAMPLE_PNG
 
 
@@ -289,12 +291,12 @@ class TestPublishRepublish:
         # Make a new internal change, stage, merge, and publish again
         topo.commit_internal({"v2.txt": "version 2\n"}, push=True)
         topo.pubgate.stage(force=True)
-        topo.merge_internal_pr(topo.cfg.stage_pr_branch, topo.cfg.internal_preview_branch)
+        topo.merge_internal_pr(topo.cfg.internal_stage_branch, topo.cfg.internal_approved_branch)
         topo.pubgate.publish(force=True)
 
         # Verify new content is on public sync branch
         topo.work_dir.run("fetch", "public-remote")
-        pr_ref = f"public-remote/{topo.cfg.publish_pr_branch}"
+        pr_ref = f"public-remote/{topo.cfg.public_publish_branch}"
         content = topo.work_dir.read_file_at_ref(pr_ref, "v2.txt")
         assert content is not None
         assert "version 2" in content
@@ -309,13 +311,13 @@ class TestPublishWithExternals:
 
         # Absorb the external change into internal main
         topo.pubgate.absorb()
-        topo.merge_internal_pr(topo.cfg.absorb_pr_branch, "main")
+        topo.merge_internal_pr(topo.cfg.internal_absorb_branch, "main")
 
         # Publish should succeed: staged snapshot is based on absorbed commit
         topo.pubgate.publish()
 
         topo.work_dir.run("fetch", "public-remote")
-        pr_ref = f"public-remote/{topo.cfg.publish_pr_branch}"
+        pr_ref = f"public-remote/{topo.cfg.public_publish_branch}"
         files = topo.work_dir.list_files_at_ref(pr_ref)
         assert "file1.txt" in files
 
@@ -327,18 +329,18 @@ class TestPublishWithExternals:
 
         # Absorb
         topo.pubgate.absorb()
-        topo.merge_internal_pr(topo.cfg.absorb_pr_branch, "main")
+        topo.merge_internal_pr(topo.cfg.internal_absorb_branch, "main")
 
         # Re-stage (includes external content now absorbed into main)
         topo.pubgate.stage()
-        topo.merge_internal_pr(topo.cfg.stage_pr_branch, topo.cfg.internal_preview_branch)
+        topo.merge_internal_pr(topo.cfg.internal_stage_branch, topo.cfg.internal_approved_branch)
 
         # Publish succeeds
         topo.pubgate.publish()
 
         # Verify public PR contains both internal and external content
         topo.work_dir.run("fetch", "public-remote")
-        pr_ref = f"public-remote/{topo.cfg.publish_pr_branch}"
+        pr_ref = f"public-remote/{topo.cfg.public_publish_branch}"
         files = topo.work_dir.list_files_at_ref(pr_ref)
         assert "file1.txt" in files
         assert "external.txt" in files
@@ -353,17 +355,17 @@ class TestPublishStageAbsorbPublish:
 
         # Stage without absorbing first (allowed now)
         topo.pubgate.stage()
-        topo.merge_internal_pr(topo.cfg.stage_pr_branch, topo.cfg.internal_preview_branch)
+        topo.merge_internal_pr(topo.cfg.internal_stage_branch, topo.cfg.internal_approved_branch)
 
         # Now absorb the external contribution
         topo.pubgate.absorb()
-        topo.merge_internal_pr(topo.cfg.absorb_pr_branch, "main")
+        topo.merge_internal_pr(topo.cfg.internal_absorb_branch, "main")
 
         # Publish the already-staged content
         topo.pubgate.publish()
 
         topo.work_dir.run("fetch", "public-remote")
-        pr_ref = f"public-remote/{topo.cfg.publish_pr_branch}"
+        pr_ref = f"public-remote/{topo.cfg.public_publish_branch}"
         files = topo.work_dir.list_files_at_ref(pr_ref)
         # Staged content doesn't include the external file (wasn't absorbed at stage time)
         assert "file1.txt" in files
@@ -379,7 +381,7 @@ class TestPublishFromNonMain:
         topo.pubgate.publish()
 
         topo.work_dir.run("fetch", "public-remote")
-        pr_ref = f"public-remote/{topo.cfg.publish_pr_branch}"
+        pr_ref = f"public-remote/{topo.cfg.public_publish_branch}"
         files = topo.work_dir.list_files_at_ref(pr_ref)
         assert "file1.txt" in files
 
@@ -392,7 +394,7 @@ class TestPublishBranchGuard:
         # Make a new change cycle and try to publish again - should refuse
         topo.commit_internal({"v2.txt": "v2\n"}, push=True)
         topo.pubgate.stage(force=True)
-        topo.merge_internal_pr(topo.cfg.stage_pr_branch, topo.cfg.internal_preview_branch)
+        topo.merge_internal_pr(topo.cfg.internal_stage_branch, topo.cfg.internal_approved_branch)
         with pytest.raises(PubGateError, match="--force"):
             topo.pubgate.publish()
 
@@ -402,11 +404,11 @@ class TestPublishBranchGuard:
 
         topo.commit_internal({"v2.txt": "v2\n"}, push=True)
         topo.pubgate.stage(force=True)
-        topo.merge_internal_pr(topo.cfg.stage_pr_branch, topo.cfg.internal_preview_branch)
+        topo.merge_internal_pr(topo.cfg.internal_stage_branch, topo.cfg.internal_approved_branch)
         topo.pubgate.publish(force=True)
 
         topo.work_dir.run("fetch", "public-remote")
-        pr_ref = f"public-remote/{topo.cfg.publish_pr_branch}"
+        pr_ref = f"public-remote/{topo.cfg.public_publish_branch}"
         assert "v2.txt" in topo.work_dir.list_files_at_ref(pr_ref)
 
 
@@ -435,7 +437,7 @@ class TestPublishBaseAdvancement:
         # Make a new internal change and re-publish
         topo.commit_internal({"app.txt": "v2\n"})
         topo.pubgate.stage()
-        topo.merge_internal_pr(topo.cfg.stage_pr_branch, topo.cfg.internal_preview_branch)
+        topo.merge_internal_pr(topo.cfg.internal_stage_branch, topo.cfg.internal_approved_branch)
         topo.work_dir.run("checkout", "main")
 
         with caplog.at_level(logging.DEBUG, logger="pubgate"):
@@ -443,7 +445,7 @@ class TestPublishBaseAdvancement:
 
         # Should succeed without errors
         topo.work_dir.run("fetch", "public-remote")
-        published = topo.work_dir.read_file_at_ref(f"public-remote/{topo.cfg.publish_pr_branch}", "app.txt")
+        published = topo.work_dir.read_file_at_ref(f"public-remote/{topo.cfg.public_publish_branch}", "app.txt")
         assert published is not None
         assert "v2" in published
 
@@ -460,9 +462,11 @@ class TestPublishForcePushProtection:
     def test_force_push_to_pr_branch_allowed(self, topo: Topology):
         topo.stage_and_merge()
         # Push to a custom branch first, then force-push
-        topo.work_dir.git.push(topo.cfg.stage_pr_branch, "origin", topo.cfg.stage_pr_branch)
+        topo.work_dir.git.push(topo.cfg.internal_stage_branch, "origin", topo.cfg.internal_stage_branch)
         # Force push should not raise (PR branches are not protected)
-        topo.pubgate._push_to_remote(topo.cfg.stage_pr_branch, "origin", topo.cfg.stage_pr_branch, force=True)
+        topo.pubgate._push_to_remote(
+            topo.cfg.internal_stage_branch, "origin", topo.cfg.internal_stage_branch, force=True
+        )
 
 
 class TestPublishNoChanges:
@@ -492,7 +496,7 @@ class TestPublishBaseKeptOnExternalChanges:
         # Stage and publish without absorbing the external change first
         topo.commit_internal({"app.txt": "v2\n"})
         topo.pubgate.stage()
-        topo.merge_internal_pr(topo.cfg.stage_pr_branch, topo.cfg.internal_preview_branch)
+        topo.merge_internal_pr(topo.cfg.internal_stage_branch, topo.cfg.internal_approved_branch)
         topo.work_dir.run("checkout", "main")
 
         with caplog.at_level(logging.DEBUG, logger="pubgate"):
