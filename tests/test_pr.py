@@ -9,6 +9,7 @@ from conftest import Topology
 from pubgate.pr import (
     GitHubCLIProvider,
     PRResult,
+    _gh_is_available,
     _pr_number_from_url,
     detect_provider,
     parse_github_repo,
@@ -163,7 +164,6 @@ class TestGitHubCLIProvider:
 
     @patch("pubgate.pr.subprocess.run")
     def test_update_pr_api_failure_still_returns_result(self, mock_run):
-        """If gh api PATCH fails, still return the PR info."""
         provider = self._make_provider()
 
         mock_run.side_effect = [
@@ -191,7 +191,6 @@ class TestGitHubCLIProvider:
 
 class TestHandlePrProviderError:
     def test_provider_exception_falls_back_to_manual_steps(self, topo: Topology, caplog):
-        """When gh pr create/update raises, _handle_pr logs a warning and falls back."""
         topo.stage_and_merge()
         # Make the remote look like GitHub so detect_provider returns a provider
         with (
@@ -216,7 +215,6 @@ class TestHandlePrProviderError:
 
 class TestDryRunPrMessages:
     def test_dry_run_with_provider_shows_automatic(self, topo: Topology, caplog):
-        """dry-run should say 'Would create/update PR automatically' when gh is available."""
         topo.stage_and_merge()
         with (
             patch("pubgate.core.detect_provider") as mock_detect,
@@ -231,7 +229,6 @@ class TestDryRunPrMessages:
         assert "Create PR" not in caplog.text
 
     def test_dry_run_without_provider_shows_manual(self, topo: Topology, caplog):
-        """dry-run should fall back to manual steps when no provider is available."""
         topo.stage_and_merge()
         with caplog.at_level(logging.INFO):
             topo.pubgate.publish(dry_run=True)
@@ -295,3 +292,110 @@ class TestNoPrCLIFlag:
         for cmd in ("absorb", "stage", "publish"):
             args = parser.parse_args([cmd, "--no-pr"])
             assert args.no_pr is True, f"--no-pr not accepted for {cmd}"
+
+
+# ---------------------------------------------------------------------------
+# _gh_is_available — direct tests
+# ---------------------------------------------------------------------------
+
+
+class TestGhIsAvailable:
+    @pytest.fixture(autouse=True)
+    def _clear_cache(self):
+        _gh_is_available.cache_clear()
+        yield
+        _gh_is_available.cache_clear()
+
+    @patch("pubgate.pr.subprocess.run")
+    def test_returns_true_when_authenticated(self, mock_run):
+        mock_run.return_value = _completed()
+        assert _gh_is_available() is True
+
+    @patch("pubgate.pr.subprocess.run")
+    def test_returns_false_when_not_authenticated(self, mock_run):
+        mock_run.return_value = _completed(rc=1, stderr="not logged in")
+        assert _gh_is_available() is False
+
+    @patch("pubgate.pr.subprocess.run", side_effect=FileNotFoundError("gh not found"))
+    def test_returns_false_when_gh_not_installed(self, _mock):
+        assert _gh_is_available() is False
+
+    @patch("pubgate.pr.subprocess.run", side_effect=subprocess.TimeoutExpired("gh", 30))
+    def test_returns_false_on_timeout(self, _mock):
+        assert _gh_is_available() is False
+
+    @patch("pubgate.pr.subprocess.run")
+    def test_result_is_cached(self, mock_run):
+        mock_run.return_value = _completed()
+        assert _gh_is_available() is True
+        assert _gh_is_available() is True
+        assert mock_run.call_count == 1
+
+
+# ---------------------------------------------------------------------------
+# GitHubCLIProvider — additional edge cases
+# ---------------------------------------------------------------------------
+
+
+class TestGitHubCLIProviderEdgeCases:
+    def _make_provider(self):
+        return GitHubCLIProvider("owner", "repo")
+
+    @patch("pubgate.pr.subprocess.run")
+    def test_update_pr_api_failure_logs_warning(self, mock_run, caplog):
+        provider = self._make_provider()
+
+        mock_run.side_effect = [
+            _completed(json.dumps([{"number": 5, "url": "https://github.com/owner/repo/pull/5"}])),
+            _completed(stderr="Server error", rc=1),
+        ]
+
+        with caplog.at_level(logging.WARNING):
+            result = provider.create_or_update_pr(head="f", base="m", title="T", body="B")
+
+        assert result.created is False
+        assert result.number == 5
+        assert "Could not update PR title/body" in caplog.text
+
+    @patch("pubgate.pr.subprocess.run")
+    def test_create_pr_multiline_output(self, mock_run):
+        provider = self._make_provider()
+
+        mock_run.side_effect = [
+            _completed(json.dumps([])),
+            _completed("\nWarning: something\nhttps://github.com/owner/repo/pull/99\n"),
+        ]
+
+        result = provider.create_or_update_pr(head="f", base="m", title="T", body="B")
+        # _pr_number_from_url searches within the string, so it finds the URL
+        assert result.number == 99
+
+    @patch("pubgate.pr.subprocess.run")
+    def test_find_open_pr_empty_json_array(self, mock_run):
+        provider = self._make_provider()
+        mock_run.return_value = _completed(json.dumps([]))
+
+        # Access private method directly for coverage
+        assert provider._find_open_pr(head="feature", base="main") is None
+
+
+# ---------------------------------------------------------------------------
+# _handle_pr — remote URL exception fallback
+# ---------------------------------------------------------------------------
+
+
+class TestHandlePrRemoteUrlFallback:
+    def test_get_remote_url_failure_falls_back(self, topo: Topology, caplog):
+        from pubgate.git import GitRepo
+
+        topo.bootstrap_absorb()
+        topo.commit_to_public({"new.txt": "content\n"})
+
+        with (
+            patch.object(GitRepo, "get_remote_url", side_effect=RuntimeError("no such remote")),
+            caplog.at_level(logging.INFO),
+        ):
+            topo.pubgate.absorb()
+
+        assert "Create PR" in caplog.text
+        assert "Next steps:" in caplog.text

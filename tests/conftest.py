@@ -282,7 +282,6 @@ def topo(tmp_path: Path) -> Topology:
 
 @pytest.fixture()
 def topo_empty_public(tmp_path: Path) -> Topology:
-    """Topology where the public repo has no commits (empty)."""
     public_bare = tmp_path / "public.git"
     internal_bare = tmp_path / "internal.git"
     public_work = tmp_path / "public-work"

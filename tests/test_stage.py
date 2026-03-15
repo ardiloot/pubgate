@@ -1,4 +1,5 @@
 import logging
+import subprocess
 
 import pytest
 from conftest import SAMPLE_LATIN1, SAMPLE_PNG, Topology
@@ -9,7 +10,6 @@ from pubgate.errors import PubGateError
 
 class TestStageConflictMarkers:
     def test_stage_refuses_unresolved_conflict_markers(self, topo: Topology):
-        """Stage must reject files that contain unresolved merge-conflict markers."""
         topo.bootstrap_absorb()
         # Setup: create a file on both sides, then absorb with a conflict
         topo.setup_baseline("shared.txt", "original line\n")
@@ -200,7 +200,6 @@ class TestStageInternalOnlyChanges:
 
 class TestStageStaleOutbound:
     def test_stage_allowed_when_outbound_stale(self, topo: Topology):
-        """stage() must succeed when pending stage is stale (external changes absorbed)."""
         topo.stage_and_merge()
 
         # External contribution arrives and is absorbed
@@ -240,7 +239,6 @@ class TestStageBranchGuard:
 
 class TestStageSkipsStateOnly:
     def test_skips_when_only_absorb_state_changed(self, topo: Topology, caplog):
-        """Stage should skip when the only difference is .pubgate-state-absorb."""
         topo.stage_and_merge()
         topo.pubgate.publish()
 
@@ -259,7 +257,6 @@ class TestStageSkipsStateOnly:
         assert "No changes to stage" in caplog.text
 
     def test_proceeds_when_state_and_content_changed(self, topo: Topology):
-        """Stage should proceed when content changes accompany state changes."""
         topo.stage_and_merge()
         topo.pubgate.publish()
 
@@ -279,3 +276,120 @@ class TestStageSkipsStateOnly:
         topo.pubgate.stage()
         files = topo.work_dir.list_files_at_ref(topo.cfg.stage_pr_branch)
         assert "new-feature.txt" in files
+
+
+class TestStageLogOnelineException:
+    def test_stage_succeeds_when_log_oneline_fails(self, topo: Topology, caplog):
+        from unittest.mock import patch
+
+        from pubgate.errors import PubGateError
+        from pubgate.git import GitRepo
+
+        topo.stage_and_merge()
+
+        # Publish + absorb to complete the cycle, then make a new change
+        topo.pubgate.publish()
+        topo.work_dir.run("fetch", "public-remote")
+        topo.merge_public_pr(topo.cfg.publish_pr_branch, topo.cfg.public_main_branch)
+        topo.work_dir.run("checkout", "main")
+        topo.pubgate.absorb()
+        topo.merge_internal_pr(topo.cfg.absorb_pr_branch, "main")
+        topo.commit_internal({"v2.txt": "version 2\n"})
+
+        call_count = 0
+        original_log = GitRepo.log_oneline
+
+        def failing_first_log(self_inner, base, head):
+            nonlocal call_count
+            call_count += 1
+            # Fail only on the first call (the pre-commit logging in stage()),
+            # let subsequent calls (e.g., commit message generation) succeed.
+            if call_count == 1:
+                raise PubGateError("simulated log failure")
+            return original_log(self_inner, base, head)
+
+        with patch.object(GitRepo, "log_oneline", failing_first_log):
+            with caplog.at_level(logging.INFO, logger="pubgate"):
+                topo.pubgate.stage(force=True)
+
+        # Stage should still succeed
+        files = topo.work_dir.list_files_at_ref(topo.cfg.stage_pr_branch)
+        assert "v2.txt" in files
+        assert call_count >= 1
+
+
+class TestSnapshotUnreadableFile:
+    def test_unreadable_file_skipped(self, topo: Topology):
+        from unittest.mock import patch
+
+        from pubgate.git import GitRepo
+
+        topo.bootstrap_absorb()
+        topo.commit_internal({"normal.txt": "ok\n", "broken.txt": "will-be-unreadable\n"})
+
+        original_read = GitRepo.read_file_auto
+
+        def selective_read(self_inner, ref, path):
+            if path == "broken.txt":
+                return None
+            return original_read(self_inner, ref, path)
+
+        with patch.object(GitRepo, "read_file_auto", selective_read):
+            topo.pubgate.stage()
+
+        files = topo.work_dir.list_files_at_ref(topo.cfg.stage_pr_branch)
+        assert "normal.txt" in files
+        assert "broken.txt" not in files
+
+
+class TestEnsurePublicBranchCleanup:
+    def test_orphan_branch_cleanup_on_failure(self, topo: Topology, caplog):
+        from unittest.mock import patch
+
+        from pubgate.git import GitRepo
+
+        topo.bootstrap_absorb()
+
+        # Ensure public-preview doesn't exist on origin (may not have been created yet)
+        # Delete the remote tracking ref if it exists
+        result = subprocess.run(
+            ["git", "-C", str(topo.work_dir.path), "rev-parse", "--verify", "refs/remotes/origin/public-preview"],
+            capture_output=True,
+            text=True,
+        )
+        if result.returncode == 0:
+            topo.work_dir.run("push", "origin", "--delete", "public-preview")
+        # Also delete local branch if it exists
+        result2 = subprocess.run(
+            ["git", "-C", str(topo.work_dir.path), "rev-parse", "--verify", "refs/heads/public-preview"],
+            capture_output=True,
+            text=True,
+        )
+        if result2.returncode == 0:
+            topo.work_dir.run("branch", "-D", "public-preview")
+        topo.work_dir.fetch("origin")
+
+        def failing_commit(self_inner, msg):
+            raise RuntimeError("simulated commit failure")
+
+        with (
+            patch.object(GitRepo, "commit_allow_empty", failing_commit),
+            caplog.at_level(logging.WARNING, logger="pubgate"),
+            pytest.raises(RuntimeError, match="simulated commit failure"),
+        ):
+            topo.pubgate._ensure_public_branch()
+
+        # Should be back on main, orphan branch should be cleaned up
+        current = topo.work_dir.run("rev-parse", "--abbrev-ref", "HEAD").strip()
+        assert current == "main"
+
+
+class TestScrubResidualMarkerInStage:
+    def test_unclosed_begin_marker_raises(self, topo: Topology):
+        topo.bootstrap_absorb()
+        topo.commit_internal({"oops.txt": "public\n# BEGIN-INTERNAL\nsecret stays\n"})
+
+        from pubgate.errors import PubGateError
+
+        with pytest.raises(PubGateError, match="unclosed BEGIN-INTERNAL"):
+            topo.pubgate.stage()

@@ -62,7 +62,7 @@ def apply_absorb_changes(
                 actions.append(f"  add{' (binary)' if is_binary else ''}: {change.path}")
 
         elif change.is_modify:
-            _merge_file(git, base_sha, public_ref, change.path, actions)
+            _merge_file(git, base_sha, public_ref, change.path, actions, staged_sha=staged_sha)
 
         elif change.is_delete:
             actions.append(f"  deleted on public (kept locally, review manually): {change.path}")
@@ -82,6 +82,8 @@ def _merge_file(
     public_ref: str,
     path: str,
     actions: list[str],
+    *,
+    staged_sha: str | None = None,
 ) -> None:
     if git.is_binary_at_ref(public_ref, path) or git.is_binary_at_ref(base_sha, path):
         theirs_bytes = git.read_file_at_ref_bytes(public_ref, path)
@@ -96,7 +98,17 @@ def _merge_file(
         actions.append(f"  binary changed on public (replaced locally, review manually): {path}")
         return
 
-    base_content = git.read_file_at_ref(base_sha, path)
+    # Use the scrubbed staged content as merge base when available.
+    # This mirrors the is_add path: after a publish cycle, the correct base
+    # is the scrubbed version of the internal file that was staged, not the
+    # old public content (which would cause false conflicts on internal blocks).
+    base_content: str | None = None
+    if staged_sha is not None:
+        staged_content = git.read_file_at_ref(staged_sha, path)
+        if staged_content is not None:
+            base_content = scrub_internal_blocks(staged_content, path=path)
+    if base_content is None:
+        base_content = git.read_file_at_ref(base_sha, path)
     theirs_content = git.read_file_at_ref(public_ref, path)
 
     if base_content is None or theirs_content is None:

@@ -559,7 +559,6 @@ class PubGate:
         return _AbsorbResult(AbsorbStatus.NEEDS_ABSORB, public_head, last_absorbed)
 
     def _snapshot_unchanged_ref(self, snapshot: dict[str, str | bytes]) -> str | None:
-        """Return the ref the snapshot matched against, or None if there are changes."""
         cfg, git = self.cfg, self.git
         if git.branch_exists(cfg.stage_pr_branch):
             compare_ref = cfg.stage_pr_branch

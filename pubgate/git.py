@@ -228,7 +228,6 @@ class GitRepo:
         return entries
 
     def find_commit_introducing(self, base: str, head: str, path: str, content: str) -> str | None:
-        """Find the oldest commit in base..head that changed *path* w.r.t. *content*."""
         result = self._run(
             "log",
             "--reverse",
