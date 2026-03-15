@@ -2,14 +2,93 @@ import logging
 import tempfile
 from pathlib import Path
 
-from .errors import GitError
+from .config import Config
+from .errors import GitError, PubGateError
 from .filtering import scrub_internal_blocks
 from .git import GitRepo
+from .models import format_commit
+from .state import AbsorbStatus, StateRef
 
 logger = logging.getLogger(__name__)
 
 
-def apply_absorb_changes(
+# ---------------------------------------------------------------------------
+# Public API
+# ---------------------------------------------------------------------------
+
+
+class AbsorbResult:
+    __slots__ = ("status", "public_head", "last_absorbed")
+
+    def __init__(self, status: AbsorbStatus, public_head: str, last_absorbed: str | None) -> None:
+        self.status = status
+        self.public_head = public_head
+        self.last_absorbed = last_absorbed
+
+
+def check_absorb(cfg: Config, git: GitRepo) -> AbsorbResult:
+    if not git.remote_branch_exists(cfg.public_remote, cfg.public_main_branch):
+        raise PubGateError(
+            f"Error: public repo has no '{cfg.public_main_branch}' branch. "
+            f"The public repo must have at least one commit before running absorb."
+        )
+    public_head = git.rev_parse(cfg.public_main_ref)
+
+    absorb_ref = StateRef.read(git, cfg.internal_main_branch, cfg.absorb_state_file)
+    last_absorbed = absorb_ref.sha if absorb_ref else None
+
+    if last_absorbed is None:
+        logger.debug("Inbound status: NEEDS_BOOTSTRAP")
+        return AbsorbResult(AbsorbStatus.NEEDS_BOOTSTRAP, public_head, None)
+
+    if last_absorbed == public_head:
+        logger.debug("Inbound status: UP_TO_DATE")
+        return AbsorbResult(AbsorbStatus.UP_TO_DATE, public_head, last_absorbed)
+
+    logger.debug("Inbound status: NEEDS_ABSORB")
+    return AbsorbResult(AbsorbStatus.NEEDS_ABSORB, public_head, last_absorbed)
+
+
+def resolve_and_apply(cfg: Config, git: GitRepo, base_sha: str, public_head: str) -> list[str]:
+    public_ref = f"{cfg.public_remote}/{cfg.public_main_branch}"
+    excluded = cfg.state_files
+    staged_sha: str | None = None
+    try:
+        stage_ref = StateRef.read(git, public_ref, cfg.stage_state_file)
+        if stage_ref is not None:
+            staged_sha = stage_ref.sha
+    except PubGateError as exc:
+        logger.warning("Could not read stage state from %s: %s", public_ref, exc)
+    return _apply_absorb_changes(git, base_sha, public_head, public_ref, excluded=excluded, staged_sha=staged_sha)
+
+
+def absorb_commit_message(
+    git: GitRepo,
+    last_absorbed: str,
+    public_head: str,
+    conflicted: list[str] | None = None,
+) -> str:
+    subject = f"pubgate: absorb public changes {last_absorbed[:7]}..{public_head[:7]}"
+    commits = git.log_oneline(last_absorbed, public_head)
+    lines = [subject]
+    if commits:
+        lines.append("")
+        lines.append(f"Included commits ({last_absorbed[:7]}..{public_head[:7]}):")
+        lines.extend(f"  {i}. {format_commit(c)}" for i, c in enumerate(commits, 1))
+    if conflicted:
+        lines.append("")
+        lines.append("CONFLICTS (resolve before merging):")
+        for path in conflicted:
+            lines.append(f"  {path}")
+    return "\n".join(lines)
+
+
+# ---------------------------------------------------------------------------
+# Implementation details (private)
+# ---------------------------------------------------------------------------
+
+
+def _apply_absorb_changes(
     git: GitRepo,
     base_sha: str,
     public_head: str,
@@ -55,14 +134,14 @@ def apply_absorb_changes(
                             else:
                                 actions.append(f"  merge (CONFLICTS - resolve manually): {change.path}")
                     else:
-                        # No staged version — file wasn't published through pubgate
+                        # No staged version; file wasn't published through pubgate
                         actions.append(f"  added on public (kept local, review manually): {change.path}")
             else:
                 is_binary = git.copy_file_from_ref(public_ref, change.path)
                 actions.append(f"  add{' (binary)' if is_binary else ''}: {change.path}")
 
         elif change.is_modify:
-            _merge_file(git, base_sha, public_ref, change.path, actions)
+            _merge_file(git, base_sha, public_ref, change.path, actions, staged_sha=staged_sha)
 
         elif change.is_delete:
             actions.append(f"  deleted on public (kept locally, review manually): {change.path}")
@@ -82,6 +161,8 @@ def _merge_file(
     public_ref: str,
     path: str,
     actions: list[str],
+    *,
+    staged_sha: str | None = None,
 ) -> None:
     if git.is_binary_at_ref(public_ref, path) or git.is_binary_at_ref(base_sha, path):
         theirs_bytes = git.read_file_at_ref_bytes(public_ref, path)
@@ -96,7 +177,17 @@ def _merge_file(
         actions.append(f"  binary changed on public (replaced locally, review manually): {path}")
         return
 
-    base_content = git.read_file_at_ref(base_sha, path)
+    # Use the scrubbed staged content as merge base when available.
+    # This mirrors the is_add path: after a publish cycle, the correct base
+    # is the scrubbed version of the internal file that was staged, not the
+    # old public content (which would cause false conflicts on internal blocks).
+    base_content: str | None = None
+    if staged_sha is not None:
+        staged_content = git.read_file_at_ref(staged_sha, path)
+        if staged_content is not None:
+            base_content = scrub_internal_blocks(staged_content, path=path)
+    if base_content is None:
+        base_content = git.read_file_at_ref(base_sha, path)
     theirs_content = git.read_file_at_ref(public_ref, path)
 
     if base_content is None or theirs_content is None:

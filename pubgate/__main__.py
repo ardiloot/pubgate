@@ -26,6 +26,9 @@ def _add_common_flags(subparser: argparse.ArgumentParser) -> None:
     subparser.add_argument(
         "--force", action="store_true", help="Overwrite existing PR branch (use when previous PR was not merged)"
     )
+    subparser.add_argument(
+        "--no-pr", action="store_true", help="Skip automatic PR creation (show manual steps instead)"
+    )
 
 
 def build_parser() -> argparse.ArgumentParser:
@@ -71,7 +74,7 @@ def main(argv: list[str] | None = None) -> None:
         git.ensure_remote(cfg.public_remote, cfg.public_url)
         pg = PubGate(cfg, git)
 
-        flags = dict(dry_run=args.dry_run, force=args.force)
+        flags = dict(dry_run=args.dry_run, force=args.force, no_pr=args.no_pr)
         match cmd:
             case Command.ABSORB:
                 pg.absorb(**flags)

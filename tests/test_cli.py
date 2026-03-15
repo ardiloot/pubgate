@@ -1,10 +1,12 @@
+import logging
+import subprocess
 from pathlib import Path
 
 import pytest
 from conftest import Topology
 
-from pubgate.__main__ import main
-from pubgate.config import Config
+from pubgate.__main__ import build_parser, main
+from pubgate.config import Config, load_config
 from pubgate.errors import GitError, PubGateError
 from pubgate.git import GitRepo
 from pubgate.state import validate_state_sha
@@ -47,7 +49,6 @@ class TestBranchNameValidation:
             'internal_main_branch = "my branch"\n',
             encoding="utf-8",
         )
-        from pubgate.config import load_config
 
         with pytest.raises(PubGateError, match="invalid characters"):
             load_config(tmp_path)
@@ -98,14 +99,11 @@ class TestBranchNameCollision:
             'internal_main_branch = "main"\ninternal_preview_branch = "main"\n',
             encoding="utf-8",
         )
-        from pubgate.config import load_config
 
         with pytest.raises(PubGateError, match="share the same branch name"):
             load_config(tmp_path)
 
     def test_distinct_branch_names_pass(self):
-        from pubgate.config import Config
-
         # Default config has all distinct branch names
         cfg = Config()
         assert cfg.internal_main_branch != cfg.internal_preview_branch
@@ -121,14 +119,11 @@ class TestStateFileNameCollision:
             'stage_state_file = ".sync-state"\n',
             encoding="utf-8",
         )
-        from pubgate.config import load_config
 
         with pytest.raises(PubGateError, match="share the same filename"):
             load_config(tmp_path)
 
     def test_distinct_state_filenames_pass(self):
-        from pubgate.config import Config
-
         cfg = Config()
         assert cfg.absorb_state_file != cfg.stage_state_file
 
@@ -160,14 +155,11 @@ class TestReadFileAtRefErrors:
 
 class TestMissingConfig:
     def test_missing_pubgate_toml_raises(self, tmp_path: Path):
-        from pubgate.config import load_config
-
         with pytest.raises(PubGateError, match="No pubgate.toml found"):
             load_config(tmp_path)
 
     def test_unknown_key_rejected(self, tmp_path: Path):
         (tmp_path / "pubgate.toml").write_text('bogus_key = "value"\n', encoding="utf-8")
-        from pubgate.config import load_config
 
         with pytest.raises(PubGateError, match="Unknown keys"):
             load_config(tmp_path)
@@ -175,15 +167,11 @@ class TestMissingConfig:
 
 class TestRepoDirFlag:
     def test_repo_dir_parsed(self):
-        from pubgate.__main__ import build_parser
-
         args = build_parser().parse_args(["--repo-dir", "/some/path", "absorb"])
         assert args.repo_dir == "/some/path"
         assert args.command == "absorb"
 
     def test_repo_dir_default(self):
-        from pubgate.__main__ import build_parser
-
         args = build_parser().parse_args(["absorb"])
         assert args.repo_dir == "."
 
@@ -203,3 +191,138 @@ class TestConfigFieldMetadata:
         for f in dc_fields(Config):
             if f.metadata.get("kind") == "branch":
                 assert "scope" in f.metadata, f"Branch field '{f.name}' is missing 'scope' metadata"
+
+
+class TestMalformedToml:
+    def test_invalid_toml_raises(self, tmp_path: Path):
+        import sys
+
+        if sys.version_info >= (3, 11):
+            import tomllib
+        else:
+            import tomli as tomllib  # type: ignore[import-untyped]
+        (tmp_path / "pubgate.toml").write_text("key =\n", encoding="utf-8")
+
+        with pytest.raises((PubGateError, tomllib.TOMLDecodeError)):
+            load_config(tmp_path)
+
+
+class TestConfigTypeValidation:
+    def test_non_string_for_string_field(self, tmp_path: Path):
+        (tmp_path / "pubgate.toml").write_text("public_url = 123\n", encoding="utf-8")
+
+        with pytest.raises(PubGateError, match="must be a string"):
+            load_config(tmp_path)
+
+    def test_mixed_type_list_in_ignore(self, tmp_path: Path):
+        (tmp_path / "pubgate.toml").write_text('ignore = ["*.txt", 123]\n', encoding="utf-8")
+
+        with pytest.raises(PubGateError, match="must be a list of strings"):
+            load_config(tmp_path)
+
+    def test_non_list_for_ignore(self, tmp_path: Path):
+        (tmp_path / "pubgate.toml").write_text('ignore = "not-a-list"\n', encoding="utf-8")
+
+        with pytest.raises(PubGateError, match="must be a list of strings"):
+            load_config(tmp_path)
+
+
+class TestEnsureRemote:
+    def test_existing_remote_url_mismatch_updates(self, topo: Topology):
+        old_url = topo.work_dir.git.get_remote_url("public-remote")
+        new_url = "/tmp/fake-url.git"
+        topo.work_dir.git.ensure_remote("public-remote", new_url)
+        assert topo.work_dir.git.get_remote_url("public-remote") == new_url
+        # Restore
+        topo.work_dir.git.ensure_remote("public-remote", old_url)
+
+    def test_missing_remote_without_url_raises(self, topo: Topology):
+        with pytest.raises(PubGateError, match="does not exist"):
+            topo.work_dir.git.ensure_remote("no-such-remote", None)
+
+    def test_missing_remote_with_url_creates(self, topo: Topology):
+        topo.work_dir.git.ensure_remote("new-remote", "/tmp/test.git")
+        assert topo.work_dir.git.get_remote_url("new-remote") == "/tmp/test.git"
+
+
+class TestCopyFileFromRefWarning:
+    def test_warning_on_unreadable_text_file(self, topo: Topology, caplog):
+        from unittest.mock import patch as mock_patch
+
+        git = topo.work_dir.git
+        with (
+            mock_patch.object(git, "is_binary_at_ref", return_value=False),
+            mock_patch.object(git, "read_file_at_ref", return_value=None),
+            caplog.at_level(logging.WARNING, logger="pubgate"),
+        ):
+            git.copy_file_from_ref("HEAD", "ghost.txt")
+        assert "Could not read file" in caplog.text
+
+    def test_warning_on_unreadable_binary_file(self, topo: Topology, caplog):
+        git = topo.work_dir.git
+        from unittest.mock import patch as mock_patch
+
+        with (
+            mock_patch.object(git, "is_binary_at_ref", return_value=True),
+            mock_patch.object(git, "read_file_at_ref_bytes", return_value=None),
+            caplog.at_level(logging.WARNING, logger="pubgate"),
+        ):
+            git.copy_file_from_ref("HEAD", "ghost.bin")
+        assert "Could not read binary file" in caplog.text
+
+
+class TestBranchSyncValidation:
+    def test_diverged_branches_raise(self, topo: Topology):
+        # Create a local-only commit (don't push)
+        topo.work_dir.commit_files({"local-only.txt": "local\n"}, "local commit")
+
+        # Create a different commit directly on the server via a temp clone
+        import tempfile
+
+        with tempfile.TemporaryDirectory() as tmpdir:
+            server_url = topo.work_dir.run("remote", "get-url", "origin").strip()
+            subprocess.run(["git", "clone", server_url, tmpdir + "/c"], capture_output=True, check=True)
+            subprocess.run(["git", "-C", tmpdir + "/c", "checkout", "main"], capture_output=True, check=True)
+            (Path(tmpdir + "/c/server-only.txt")).write_text("server\n")
+            subprocess.run(["git", "-C", tmpdir + "/c", "add", "."], capture_output=True, check=True)
+            subprocess.run(
+                ["git", "-C", tmpdir + "/c", "commit", "-m", "server commit"], capture_output=True, check=True
+            )
+            subprocess.run(["git", "-C", tmpdir + "/c", "push", "origin", "main"], capture_output=True, check=True)
+
+        topo.work_dir.fetch("origin")
+        with pytest.raises(PubGateError, match="diverged"):
+            topo.work_dir.git.ensure_branch_synced("main", "origin", "main")
+
+
+class TestFindCommitIntroducing:
+    def test_returns_none_when_no_match(self, topo: Topology):
+        head = topo.work_dir.git.rev_parse("HEAD")
+        topo.work_dir.commit_files({"unrelated.txt": "data\n"}, "unrelated commit")
+        new_head = topo.work_dir.git.rev_parse("HEAD")
+        result = topo.work_dir.git.find_commit_introducing(head, new_head, "unrelated.txt", "NONEXISTENT_CONTENT")
+        assert result is None
+
+    def test_returns_sha_when_found(self, topo: Topology):
+        head = topo.work_dir.git.rev_parse("HEAD")
+        topo.work_dir.commit_files({"marker.txt": "MARKER_VALUE\n"}, "add marker")
+        new_head = topo.work_dir.git.rev_parse("HEAD")
+        result = topo.work_dir.git.find_commit_introducing(head, new_head, "marker.txt", "MARKER_VALUE")
+        assert result is not None
+        assert result == new_head
+
+
+class TestMainEnsureRemoteFailure:
+    def test_main_exits_on_ensure_remote_failure(self, tmp_path: Path):
+        # Set up a git repo with a config that references a non-existent remote
+        subprocess.run(["git", "init", str(tmp_path)], capture_output=True, check=True)
+        subprocess.run(["git", "-C", str(tmp_path), "checkout", "-b", "main"], capture_output=True, check=True)
+        (tmp_path / "dummy.txt").write_text("x\n")
+        subprocess.run(["git", "-C", str(tmp_path), "add", "."], capture_output=True, check=True)
+        subprocess.run(["git", "-C", str(tmp_path), "commit", "-m", "init"], capture_output=True, check=True)
+        # Config without public_url and no public-remote configured
+        (tmp_path / "pubgate.toml").write_text("", encoding="utf-8")
+
+        with pytest.raises(SystemExit) as exc:
+            main(["--repo-dir", str(tmp_path), "absorb"])
+        assert exc.value.code == 1

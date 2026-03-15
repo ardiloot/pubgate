@@ -233,6 +233,22 @@ class Topology:
         self.merge_internal_pr(self.cfg.stage_pr_branch, self.cfg.internal_preview_branch)
         self.work_dir.run("checkout", "main")
 
+    def publish_and_merge(self) -> None:
+        self.pubgate.publish()
+        self.work_dir.run("fetch", "public-remote")
+        self.merge_public_pr(self.cfg.publish_pr_branch, self.cfg.public_main_branch)
+        self.work_dir.run("checkout", "main")
+
+    def do_full_publish_cycle(self) -> None:
+        self.pubgate.stage()
+        self.merge_internal_pr(self.cfg.stage_pr_branch, self.cfg.internal_preview_branch)
+        self.work_dir.run("checkout", "main")
+        self.publish_and_merge()
+
+    def absorb_and_merge(self) -> None:
+        self.pubgate.absorb()
+        self.merge_internal_pr(self.cfg.absorb_pr_branch, "main")
+
 
 # ---------------------------------------------------------------------------
 # Fixture: topo
@@ -282,7 +298,6 @@ def topo(tmp_path: Path) -> Topology:
 
 @pytest.fixture()
 def topo_empty_public(tmp_path: Path) -> Topology:
-    """Topology where the public repo has no commits (empty)."""
     public_bare = tmp_path / "public.git"
     internal_bare = tmp_path / "internal.git"
     public_work = tmp_path / "public-work"

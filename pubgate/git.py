@@ -77,6 +77,10 @@ class GitRepo:
     # Remote operations
     # ------------------------------------------------------------------
 
+    def get_remote_url(self, name: str) -> str:
+        result = self._run("remote", "get-url", name)
+        return result.stdout.strip()
+
     def ensure_remote(self, name: str, url: str | None) -> None:
         result = self._run("remote", "get-url", name, check=False)
         remote_exists = result.returncode == 0
@@ -224,7 +228,6 @@ class GitRepo:
         return entries
 
     def find_commit_introducing(self, base: str, head: str, path: str, content: str) -> str | None:
-        """Find the oldest commit in base..head that changed *path* w.r.t. *content*."""
         result = self._run(
             "log",
             "--reverse",

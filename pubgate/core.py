@@ -1,31 +1,28 @@
 import logging
 from collections.abc import Callable
-from typing import NamedTuple
 
-from .absorb import apply_absorb_changes
+from .absorb import AbsorbResult, absorb_commit_message, check_absorb, resolve_and_apply
 from .config import CONFIG_FILE, Config
 from .errors import GitError, PubGateError
 from .git import GitRepo
-from .models import CommitInfo
-from .stage_snapshot import build_stage_snapshot
+from .models import CommitInfo, format_commit
+from .pr import detect_provider
+from .publish import publish_commit_message, resolve_publish_base
+from .stage_snapshot import build_stage_snapshot, ensure_public_branch, snapshot_unchanged_ref, stage_commit_message
 from .state import AbsorbStatus, StateRef
 
 logger = logging.getLogger(__name__)
 
 
-def _format_commit(c: CommitInfo) -> str:
-    return f"{c.subject} ({c.sha[:7]}, {c.author}, {c.date})"
-
-
 def _log_commits(commits: list[CommitInfo]) -> None:
     for i, c in enumerate(commits, 1):
-        logger.info("  %d. %s", i, _format_commit(c))
+        logger.info("  %d. %s", i, format_commit(c))
 
 
-class _AbsorbResult(NamedTuple):
-    status: AbsorbStatus
-    public_head: str
-    last_absorbed: str | None
+def _split_message(msg: str) -> tuple[str, str]:
+    title = msg.split("\n", 1)[0]
+    body = msg.split("\n", 1)[1].strip() if "\n" in msg else ""
+    return title, body
 
 
 # ---------------------------------------------------------------------------
@@ -46,7 +43,7 @@ class PubGate:
     # Public commands
     # ------------------------------------------------------------------
 
-    def absorb(self, *, dry_run: bool = False, force: bool = False) -> None:
+    def absorb(self, *, dry_run: bool = False, force: bool = False, no_pr: bool = False) -> None:
         cfg, git = self.cfg, self.git
         public_main = cfg.public_main_ref
 
@@ -70,6 +67,16 @@ class PubGate:
 
             if dry_run:
                 logger.info("[dry-run] Would create branch, write tracking file, and commit")
+                self._handle_pr(
+                    remote="origin",
+                    head=cfg.absorb_pr_branch,
+                    base=cfg.internal_main_branch,
+                    title="",
+                    body="",
+                    host_label="your git host",
+                    no_pr=no_pr,
+                    dry_run=True,
+                )
                 return
 
             def _bootstrap_work() -> bool:
@@ -87,9 +94,16 @@ class PubGate:
                 work_fn=_bootstrap_work,
             )
             self._push_to_remote(cfg.absorb_pr_branch, "origin", cfg.absorb_pr_branch, force=force)
-            logger.info("Next steps:")
-            logger.info("  1. Create PR '%s → %s' on your git host", cfg.absorb_pr_branch, cfg.internal_main_branch)
-            logger.info("  2. Review and merge the PR")
+            title = f"pubgate: initialize absorb tracking at {public_head[:7]}"
+            self._handle_pr(
+                remote="origin",
+                head=cfg.absorb_pr_branch,
+                base=cfg.internal_main_branch,
+                title=title,
+                body="",
+                host_label="your git host",
+                no_pr=no_pr,
+            )
             return
 
         # NEEDS_ABSORB - normal absorb
@@ -123,15 +137,20 @@ class PubGate:
                 logger.info("  (no file changes)")
             logger.info("[dry-run] Would commit on %s", cfg.absorb_pr_branch)
             logger.info("[dry-run] Would push %s to origin/%s", cfg.absorb_pr_branch, cfg.absorb_pr_branch)
-            logger.info("Next steps:")
-            logger.info(
-                "  1. Create PR '%s \u2192 %s' on your git host", cfg.absorb_pr_branch, cfg.internal_main_branch
+            self._handle_pr(
+                remote="origin",
+                head=cfg.absorb_pr_branch,
+                base=cfg.internal_main_branch,
+                title="",
+                body="",
+                host_label="your git host",
+                no_pr=no_pr,
+                dry_run=True,
             )
-            logger.info("  2. Review and merge the PR")
             return
 
         def _absorb_work() -> bool:
-            actions = self._apply_absorb_changes(last_absorbed, public_head)
+            actions = resolve_and_apply(cfg, git, last_absorbed, public_head)
             if actions:
                 logger.info("Changes (base %s):", last_absorbed[:7])
             for a in actions:
@@ -141,7 +160,7 @@ class PubGate:
                     logger.info("%s", a)
             git.write_file_and_stage(cfg.absorb_state_file, public_head + "\n")
             conflicted = [a.split(": ", 1)[1] for a in actions if "CONFLICTS" in a]
-            msg = self._absorb_commit_message(last_absorbed, public_head, conflicted)
+            msg = absorb_commit_message(git, last_absorbed, public_head, conflicted)
             sha = git.commit(msg)
             logger.info("Committed on %s (%s %s)", cfg.absorb_pr_branch, sha[:7], msg.split("\n", 1)[0])
             return True
@@ -154,11 +173,19 @@ class PubGate:
             work_fn=_absorb_work,
         )
         self._push_to_remote(cfg.absorb_pr_branch, "origin", cfg.absorb_pr_branch, force=force)
-        logger.info("Next steps:")
-        logger.info("  1. Create PR '%s → %s' on your git host", cfg.absorb_pr_branch, cfg.internal_main_branch)
-        logger.info("  2. Review and merge the PR")
+        full_msg = absorb_commit_message(git, last_absorbed, public_head)
+        title, body = _split_message(full_msg)
+        self._handle_pr(
+            remote="origin",
+            head=cfg.absorb_pr_branch,
+            base=cfg.internal_main_branch,
+            title=title,
+            body=body,
+            host_label="your git host",
+            no_pr=no_pr,
+        )
 
-    def stage(self, *, dry_run: bool = False, force: bool = False) -> None:
+    def stage(self, *, dry_run: bool = False, force: bool = False, no_pr: bool = False) -> None:
         cfg, git = self.cfg, self.git
 
         self._stage_startup()
@@ -167,9 +194,9 @@ class PubGate:
         origin_preview_ref = f"origin/{cfg.internal_preview_branch}"
 
         ignore_patterns = list(cfg.ignore)
-        snapshot = self._build_stage_snapshot(ignore_patterns)
+        snapshot = build_stage_snapshot(git, cfg.internal_main_branch, ignore_patterns, frozenset({CONFIG_FILE}))
 
-        unchanged_ref = self._snapshot_unchanged_ref(snapshot)
+        unchanged_ref = snapshot_unchanged_ref(cfg, git, snapshot)
         if unchanged_ref is not None:
             if unchanged_ref == cfg.stage_pr_branch:
                 if not force:
@@ -205,15 +232,20 @@ class PubGate:
         if dry_run:
             logger.info("[dry-run] Would commit on %s", cfg.stage_pr_branch)
             logger.info("[dry-run] Would push %s to origin/%s", cfg.stage_pr_branch, cfg.stage_pr_branch)
-            logger.info("Next steps:")
-            logger.info(
-                "  1. Create PR '%s \u2192 %s' on your git host", cfg.stage_pr_branch, cfg.internal_preview_branch
+            self._handle_pr(
+                remote="origin",
+                head=cfg.stage_pr_branch,
+                base=cfg.internal_preview_branch,
+                title="",
+                body="",
+                host_label="your git host",
+                extra_steps=["Run 'pubgate publish' (if ready)"],
+                no_pr=no_pr,
+                dry_run=True,
             )
-            logger.info("  2. Review and merge the PR")
-            logger.info("  3. Run 'pubgate publish' (if ready)")
             return
 
-        self._ensure_public_branch()
+        ensure_public_branch(cfg, git)
 
         def _stage_work() -> bool:
             existing = git.ls_tree("HEAD")
@@ -230,7 +262,7 @@ class PubGate:
                 logger.info("No changes to stage (public-preview is already up to date)")
                 return False
 
-            msg = self._stage_commit_message(main_head, origin_preview_ref)
+            msg = stage_commit_message(git, cfg, main_head, origin_preview_ref)
             sha = git.commit(msg)
             logger.info("Committed on %s (%s %s)", cfg.stage_pr_branch, sha[:7], msg.split("\n", 1)[0])
             return True
@@ -244,12 +276,20 @@ class PubGate:
         )
         if committed:
             self._push_to_remote(cfg.stage_pr_branch, "origin", cfg.stage_pr_branch, force=force)
-            logger.info("Next steps:")
-            logger.info("  1. Create PR '%s → %s' on your git host", cfg.stage_pr_branch, cfg.internal_preview_branch)
-            logger.info("  2. Review and merge the PR")
-            logger.info("  3. Run 'pubgate publish' (if ready)")
+            full_msg = stage_commit_message(git, cfg, main_head, origin_preview_ref)
+            title, body = _split_message(full_msg)
+            self._handle_pr(
+                remote="origin",
+                head=cfg.stage_pr_branch,
+                base=cfg.internal_preview_branch,
+                title=title,
+                body=body,
+                host_label="your git host",
+                extra_steps=["Run 'pubgate publish' (if ready)"],
+                no_pr=no_pr,
+            )
 
-    def publish(self, *, dry_run: bool = False, force: bool = False) -> None:
+    def publish(self, *, dry_run: bool = False, force: bool = False, no_pr: bool = False) -> None:
         cfg, git = self.cfg, self.git
         public_main = cfg.public_main_ref
 
@@ -289,7 +329,9 @@ class PubGate:
 
         # Determine publish base and log range
         public_head = git.rev_parse(public_main)
-        publish_base, publish_log_base = self._resolve_publish_base(
+        publish_base, publish_log_base = resolve_publish_base(
+            cfg,
+            git,
             absorbed_sha,
             public_head,
             origin_preview_ref,
@@ -318,12 +360,17 @@ class PubGate:
             logger.info(
                 "[dry-run] Would push %s to %s/%s", cfg.publish_pr_branch, cfg.public_remote, cfg.publish_pr_branch
             )
-            logger.info("Next steps:")
-            logger.info(
-                "  1. Create PR '%s \u2192 %s' on the public repo", cfg.publish_pr_branch, cfg.public_main_branch
+            self._handle_pr(
+                remote=cfg.public_remote,
+                head=cfg.publish_pr_branch,
+                base=cfg.public_main_branch,
+                title="",
+                body="",
+                host_label="the public repo",
+                extra_steps=["Run 'pubgate absorb' to sync tracking"],
+                no_pr=no_pr,
+                dry_run=True,
             )
-            logger.info("  2. Review and merge the PR")
-            logger.info("  3. Run 'pubgate absorb' to sync tracking")
             return
 
         def _publish_work() -> bool:
@@ -338,15 +385,9 @@ class PubGate:
                 logger.info("No changes to publish (public repo already has this content)")
                 return False
 
-            subject = f"pubgate: publish stage from {main_sha[:7]}"
-            lines = [subject]
-            if preview_commits:
-                lines.append("")
-                lines.append(f"Included commits ({publish_log_base[:7]}..{origin_preview_ref}):")
-                lines.extend(f"  {i}. {_format_commit(c)}" for i, c in enumerate(preview_commits, 1))
-            msg = "\n".join(lines)
+            msg = publish_commit_message(main_sha, preview_commits, publish_log_base, origin_preview_ref)
             sha = git.commit(msg)
-            logger.info("Committed on %s (%s %s)", cfg.publish_pr_branch, sha[:7], subject)
+            logger.info("Committed on %s (%s %s)", cfg.publish_pr_branch, sha[:7], msg.split("\n", 1)[0])
             return True
 
         def _publish_push() -> None:
@@ -361,14 +402,87 @@ class PubGate:
             after_fn=_publish_push,
         )
         if committed:
-            logger.info("Next steps:")
-            logger.info("  1. Create PR '%s → %s' on the public repo", cfg.publish_pr_branch, cfg.public_main_branch)
-            logger.info("  2. Review and merge the PR")
-            logger.info("  3. Run 'pubgate absorb' to sync tracking")
+            full_msg = publish_commit_message(main_sha, preview_commits, publish_log_base, origin_preview_ref)
+            title, body = _split_message(full_msg)
+            self._handle_pr(
+                remote=cfg.public_remote,
+                head=cfg.publish_pr_branch,
+                base=cfg.public_main_branch,
+                title=title,
+                body=body,
+                host_label="the public repo",
+                extra_steps=["Run 'pubgate absorb' to sync tracking"],
+                no_pr=no_pr,
+            )
 
     # ------------------------------------------------------------------
     # Shared workflow (private)
     # ------------------------------------------------------------------
+
+    def _log_manual_pr_steps(
+        self,
+        head: str,
+        base: str,
+        host_label: str,
+        extra_steps: list[str] | None = None,
+    ) -> None:
+        logger.info("Next steps:")
+        logger.info("  1. Create PR '%s → %s' on %s", head, base, host_label)
+        logger.info("  2. Review and merge the PR")
+        for i, step in enumerate(extra_steps or [], start=3):
+            logger.info("  %d. %s", i, step)
+
+    def _handle_pr(
+        self,
+        *,
+        remote: str,
+        head: str,
+        base: str,
+        title: str,
+        body: str,
+        host_label: str,
+        extra_steps: list[str] | None = None,
+        no_pr: bool,
+        dry_run: bool = False,
+    ) -> None:
+        if no_pr:
+            self._log_manual_pr_steps(head, base, host_label, extra_steps)
+            return
+
+        try:
+            remote_url = self.git.get_remote_url(remote)
+        except Exception:
+            self._log_manual_pr_steps(head, base, host_label, extra_steps)
+            return
+
+        provider = detect_provider(remote_url)
+        if provider is None:
+            self._log_manual_pr_steps(head, base, host_label, extra_steps)
+            return
+
+        if dry_run:
+            logger.info("[dry-run] Would create/update PR '%s → %s' automatically", head, base)
+            logger.info("Next steps:")
+            logger.info("  1. Review and merge the PR")
+            for i, step in enumerate(extra_steps or [], start=2):
+                logger.info("  %d. %s", i, step)
+            return
+
+        try:
+            result = provider.create_or_update_pr(head=head, base=base, title=title, body=body)
+        except Exception as exc:
+            logger.warning("Automatic PR creation failed: %s", exc)
+            self._log_manual_pr_steps(head, base, host_label, extra_steps)
+            return
+
+        if result.created:
+            logger.info("Created PR #%d: %s", result.number, result.url)
+        else:
+            logger.info("Updated PR #%d: %s", result.number, result.url)
+        logger.info("Next steps:")
+        logger.info("  1. Review and merge the PR")
+        for i, step in enumerate(extra_steps or [], start=2):
+            logger.info("  %d. %s", i, step)
 
     def _require_on_main(self) -> None:
         git, cfg = self.git, self.cfg
@@ -384,13 +498,13 @@ class PubGate:
         git.fetch("origin")
         git.ensure_branch_synced(cfg.internal_main_branch, "origin", cfg.internal_main_branch)
 
-    def _absorb_startup(self) -> _AbsorbResult:
+    def _absorb_startup(self) -> AbsorbResult:
         logger.debug("Starting absorb startup")
         self._require_on_main()
         self.git.fetch(self.cfg.public_remote)
         self._prune_internal_pr_branches()
         self._prune_publish_pr_branch()
-        return self._check_absorb()
+        return check_absorb(self.cfg, self.git)
 
     def _stage_startup(self) -> None:
         logger.debug("Starting stage startup")
@@ -406,57 +520,6 @@ class PubGate:
         git.fetch("origin")
         git.fetch(cfg.public_remote)
         self._prune_publish_pr_branch()
-
-    def _check_absorb(self) -> _AbsorbResult:
-        cfg, git = self.cfg, self.git
-        if not git.remote_branch_exists(cfg.public_remote, cfg.public_main_branch):
-            raise PubGateError(
-                f"Error: public repo has no '{cfg.public_main_branch}' branch. "
-                f"The public repo must have at least one commit before running absorb."
-            )
-        public_head = git.rev_parse(cfg.public_main_ref)
-
-        absorb_ref = StateRef.read(git, cfg.internal_main_branch, cfg.absorb_state_file)
-        last_absorbed = absorb_ref.sha if absorb_ref else None
-
-        if last_absorbed is None:
-            logger.debug("Inbound status: NEEDS_BOOTSTRAP")
-            return _AbsorbResult(AbsorbStatus.NEEDS_BOOTSTRAP, public_head, None)
-
-        if last_absorbed == public_head:
-            logger.debug("Inbound status: UP_TO_DATE")
-            return _AbsorbResult(AbsorbStatus.UP_TO_DATE, public_head, last_absorbed)
-
-        logger.debug("Inbound status: NEEDS_ABSORB")
-        return _AbsorbResult(AbsorbStatus.NEEDS_ABSORB, public_head, last_absorbed)
-
-    def _snapshot_unchanged_ref(self, snapshot: dict[str, str | bytes]) -> str | None:
-        """Return the ref the snapshot matched against, or None if there are changes."""
-        cfg, git = self.cfg, self.git
-        if git.branch_exists(cfg.stage_pr_branch):
-            compare_ref = cfg.stage_pr_branch
-            logger.debug("Comparing snapshot against existing PR branch %s", compare_ref)
-        elif git.remote_branch_exists("origin", cfg.internal_preview_branch):
-            compare_ref = f"origin/{cfg.internal_preview_branch}"
-            logger.debug("Comparing snapshot against origin/%s", cfg.internal_preview_branch)
-        else:
-            logger.debug("No previous snapshot to compare against")
-            return "(empty)" if not snapshot else None
-
-        prev_files = set(git.ls_tree(compare_ref)) - cfg.state_files
-        new_files = set(snapshot.keys()) - cfg.state_files
-        if prev_files != new_files:
-            return None
-
-        for path in new_files:
-            new_content = snapshot[path]
-            if isinstance(new_content, bytes):
-                old_content = git.read_file_at_ref_bytes(compare_ref, path)
-            else:
-                old_content = git.read_file_at_ref(compare_ref, path)
-            if old_content != new_content:
-                return None
-        return compare_ref
 
     def _guard_branch_not_exists(self, name: str, *, force: bool) -> None:
         if not force and self.git.branch_exists(name):
@@ -520,132 +583,3 @@ class PubGate:
         ):
             logger.debug("Pruning stale local branch %s", cfg.publish_pr_branch)
             git.delete_branch(cfg.publish_pr_branch)
-
-    # ------------------------------------------------------------------
-    # Absorb internals (private)
-    # ------------------------------------------------------------------
-
-    def _apply_absorb_changes(self, base_sha: str, public_head: str) -> list[str]:
-        cfg = self.cfg
-        git = self.git
-        public_ref = f"{cfg.public_remote}/{cfg.public_main_branch}"
-        excluded = cfg.state_files
-        # Read the internal commit SHA that produced the current public content
-        staged_sha: str | None = None
-        try:
-            stage_ref = StateRef.read(git, public_ref, cfg.stage_state_file)
-            if stage_ref is not None:
-                staged_sha = stage_ref.sha
-        except PubGateError as exc:
-            logger.warning("Could not read stage state from %s: %s", public_ref, exc)
-        return apply_absorb_changes(git, base_sha, public_head, public_ref, excluded=excluded, staged_sha=staged_sha)
-
-    def _absorb_commit_message(self, last_absorbed: str, public_head: str, conflicted: list[str] | None = None) -> str:
-        subject = f"pubgate: absorb public changes {last_absorbed[:7]}..{public_head[:7]}"
-        commits = self.git.log_oneline(last_absorbed, public_head)
-        lines = [subject]
-        if commits:
-            lines.append("")
-            lines.append(f"Included commits ({last_absorbed[:7]}..{public_head[:7]}):")
-            lines.extend(f"  {i}. {_format_commit(c)}" for i, c in enumerate(commits, 1))
-        if conflicted:
-            lines.append("")
-            lines.append("CONFLICTS (resolve before merging):")
-            for path in conflicted:
-                lines.append(f"  {path}")
-        return "\n".join(lines)
-
-    def _resolve_publish_base(
-        self,
-        absorbed_sha: str,
-        public_head: str,
-        preview_ref: str,
-        *,
-        remote_sha: str | None,
-    ) -> tuple[str, str]:
-        cfg, git = self.cfg, self.git
-
-        # Find the preview commit that was last published
-        publish_log_base = absorbed_sha
-        if remote_sha is not None:
-            found = git.find_commit_introducing(
-                absorbed_sha,
-                preview_ref,
-                cfg.stage_state_file,
-                remote_sha,
-            )
-            if found:
-                publish_log_base = found
-
-        # Try to advance the base to public-remote/main HEAD by checking
-        # whether public-remote/main has any non-state-file differences from
-        # the last-published preview tree.
-        publish_base = absorbed_sha
-        if public_head != absorbed_sha:
-            state_files = cfg.state_files
-            changes = git.diff_tree(publish_log_base, public_head)
-            external_changes = [c for c in changes if c.path not in state_files]
-            if not external_changes:
-                logger.debug(
-                    "Advancing publish base %s → %s (no external changes)",
-                    absorbed_sha[:7],
-                    public_head[:7],
-                )
-                publish_base = public_head
-            else:
-                logger.debug(
-                    "Keeping publish base at %s (external changes: %s)",
-                    absorbed_sha[:7],
-                    ", ".join(c.path for c in external_changes),
-                )
-
-        return publish_base, publish_log_base
-
-    # ------------------------------------------------------------------
-    # Stage internals (private)
-    # ------------------------------------------------------------------
-
-    def _stage_commit_message(self, main_head: str, origin_preview_ref: str) -> str:
-        subject = f"pubgate: stage from main {main_head[:7]}"
-        try:
-            prev_ref = StateRef.read(self.git, origin_preview_ref, self.cfg.stage_state_file)
-        except PubGateError:
-            return subject
-        if prev_ref is None:
-            return subject
-        commits = self.git.log_oneline(prev_ref.sha, main_head)
-        if not commits:
-            return subject
-        lines = [subject, ""]
-        lines.append(f"Included commits ({prev_ref.sha[:7]}..{main_head[:7]}):")
-        lines.extend(f"  {i}. {_format_commit(c)}" for i, c in enumerate(commits, 1))
-        return "\n".join(lines)
-
-    def _build_stage_snapshot(self, ignore_patterns: list[str]) -> dict[str, str | bytes]:
-        return build_stage_snapshot(
-            self.git,
-            self.cfg.internal_main_branch,
-            ignore_patterns,
-            frozenset({CONFIG_FILE}),
-        )
-
-    def _ensure_public_branch(self) -> None:
-        cfg, git = self.cfg, self.git
-        if git.remote_branch_exists("origin", cfg.internal_preview_branch):
-            return
-
-        logger.info("Creating orphan branch '%s'...", cfg.internal_preview_branch)
-        git.checkout_orphan(cfg.internal_preview_branch)
-        try:
-            git.rm_all_tracked()
-            git.commit_allow_empty("pubgate: initialize public branch")
-        except BaseException:
-            try:
-                git.checkout_safe(cfg.internal_main_branch)
-                git.delete_branch_safe(cfg.internal_preview_branch)
-            except Exception as cleanup_exc:
-                logger.warning("Failed to clean up incomplete orphan branch: %s", cleanup_exc)
-            raise
-        git.checkout(cfg.internal_main_branch)
-        git.push(cfg.internal_preview_branch, "origin", cfg.internal_preview_branch)
-        logger.debug("Orphan branch '%s' created and pushed", cfg.internal_preview_branch)
