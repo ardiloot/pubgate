@@ -89,8 +89,8 @@ class Config:
     public_publish_branch: str = _config_field("branch", scope="public", default="pubgate/publish")
 
     # State tracking
-    absorb_state_file: str = _config_field("state", default=".pubgate-state-absorb")
-    stage_state_file: str = _config_field("state", default=".pubgate-state-stage")
+    absorb_state_file: str = _config_field("state", default=".pubgate-absorbed")
+    stage_state_file: str = _config_field("state", default=".pubgate-staged")
 
     # Filtering
     ignore: list[str] = _config_field("list", default_factory=lambda: list(DEFAULT_IGNORE_PATTERNS))

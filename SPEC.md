@@ -39,12 +39,12 @@ pubgate sidesteps this: staging is always a snapshot (current state, mechanicall
 | `pubgate/publish` | Temp: stage PR branch on the public repo |
 
 Use two independent tracking files:
-- `.pubgate-state-absorb` on `main` = last absorbed `public-remote/main` hash; also included in the staged snapshot by `stage`, so it appears on `pubgate/public-approved` and the public repo as the absorbed baseline at staging time
-- `.pubgate-state-stage` on `pubgate/public-approved` content = last staged `main` hash for external publication
+- `.pubgate-absorbed` on `main` = last absorbed `public-remote/main` hash; also included in the staged snapshot by `stage`, so it appears on `pubgate/public-approved` and the public repo as the absorbed baseline at staging time
+- `.pubgate-staged` on `pubgate/public-approved` content = last staged `main` hash for external publication
 
 These states are independent and should not share meaning implicitly by branch.
 - Outbound tracking stays with the published content
-- Both state files being pushed to the public repo is acceptable (`.pubgate-state-absorb` contains a public-repo commit hash, so there is no information leak)
+- Both state files being pushed to the public repo is acceptable (`.pubgate-absorbed` contains a public-repo commit hash, so there is no information leak)
 - Each file is included only where that tracking state is needed
 
 ## Per-command startup
@@ -72,7 +72,7 @@ Each command runs its own startup sequence before command-specific logic. `--dry
 2. Verify on `main` - error if on a different branch or detached HEAD
 3. Fetch `origin` (with `--prune`), verify local `main` matches `origin/main` exactly -- error if ahead, behind, or diverged
 4. Prune stale internal PR branches (`pubgate/absorb`, `pubgate/stage`): if the local branch exists but its remote counterpart on `origin` was deleted, delete the local branch
-5. Error if `main:.pubgate-state-absorb` does not exist (no baseline; run `absorb` first to bootstrap)
+5. Error if `main:.pubgate-absorbed` does not exist (no baseline; run `absorb` first to bootstrap)
 
 ### `publish` startup
 
@@ -85,26 +85,26 @@ Each command runs its own startup sequence before command-specific logic. `--dry
 
 1. Run absorb startup; exit on `UP_TO_DATE`
 2. If `NEEDS_BOOTSTRAP`: record `public-remote/main HEAD` as initial baseline on a PR branch, open PR into `main`
-3. If `NEEDS_ABSORB`: determine changed files by diffing the public tree at `main:.pubgate-state-absorb` against `public-remote/main`; exclude both state files (`.pubgate-state-absorb`, `.pubgate-state-stage`) from the diff (they are sync artifacts, not external contributions)
+3. If `NEEDS_ABSORB`: determine changed files by diffing the public tree at `main:.pubgate-absorbed` against `public-remote/main`; exclude both state files (`.pubgate-absorbed`, `.pubgate-staged`) from the diff (they are sync artifacts, not external contributions)
 4. Create or update `pubgate/absorb` from `main`
-5. Compute the inbound result, applying the per-file merge/copy/delete rules as needed, and update `.pubgate-state-absorb`; deleted public files are left in place and reported for manual review in the PR; when only state files changed since last absorb, the resulting PR only updates `.pubgate-state-absorb` (tracking-only)
+5. Compute the inbound result, applying the per-file merge/copy/delete rules as needed, and update `.pubgate-absorbed`; deleted public files are left in place and reported for manual review in the PR; when only state files changed since last absorb, the resulting PR only updates `.pubgate-absorbed` (tracking-only)
 6. Commit the result and open or update the internal PR into `main`; the commit message lists the public commits being absorbed (safe, they are already public); internal CI must pass before merge
 
 ## `stage` (internal -> internal `pubgate/public-approved` review) -- semi-automated
 
-1. Run stage startup; error if `main:.pubgate-state-absorb` is missing
-2. Build the stage candidate from `main` by excluding internal files that must not be published and scrubbing `BEGIN-INTERNAL`/`END-INTERNAL`. Built-in default ignore patterns cover common naming conventions (`.internal/*`, `*-internal.*`, `*.internal.*`, `*.secret`, etc.); users can override them via `ignore` in `pubgate.toml`. `.pubgate-state-absorb` is included in the snapshot naturally (not excluded), and `.pubgate-state-stage` is set to `main` HEAD; if the result does not differ from `origin/pubgate/public-approved`, exit
+1. Run stage startup; error if `main:.pubgate-absorbed` is missing
+2. Build the stage candidate from `main` by excluding internal files that must not be published and scrubbing `BEGIN-INTERNAL`/`END-INTERNAL`. Built-in default ignore patterns cover common naming conventions (`.internal/*`, `*-internal.*`, `*.internal.*`, `*.secret`, etc.); users can override them via `ignore` in `pubgate.toml`. `.pubgate-absorbed` is included in the snapshot naturally (not excluded), and `.pubgate-staged` is set to `main` HEAD; if the result does not differ from `origin/pubgate/public-approved`, exit
 3. Create or update `pubgate/stage` from `origin/pubgate/public-approved`
 4. Commit the staged result to `pubgate/stage` and open or update the internal PR (`pubgate/stage` → `pubgate/public-approved`); the commit message lists the internal commits since the last stage (safe, stays on the internal repo, useful context for the leak reviewer); internal review here is the leak-check gate before anything is pushed to the public repo
 
 ## `publish` (internal `pubgate/public-approved` -> public repo branch -> public PR) -- semi-automated
 
 1. Run publish startup
-2. If `origin/pubgate/public-approved:.pubgate-state-stage` is missing → error ("run `stage` and merge the internal PR first")
-3. If `public-remote/main:.pubgate-state-stage` exists and equals `origin/pubgate/public-approved:.pubgate-state-stage` → exit (already delivered or nothing pending for public delivery)
-4. Read the absorbed baseline from `origin/pubgate/public-approved:.pubgate-state-absorb`; create or update branch `pubgate/publish` based on this absorbed commit, replacing all content with the current content of `origin/pubgate/public-approved`
+2. If `origin/pubgate/public-approved:.pubgate-staged` is missing → error ("run `stage` and merge the internal PR first")
+3. If `public-remote/main:.pubgate-staged` exists and equals `origin/pubgate/public-approved:.pubgate-staged` → exit (already delivered or nothing pending for public delivery)
+4. Read the absorbed baseline from `origin/pubgate/public-approved:.pubgate-absorbed`; create or update branch `pubgate/publish` based on this absorbed commit, replacing all content with the current content of `origin/pubgate/public-approved`
 5. Open or update public PR (`pubgate/publish` → `main`); public CI must pass before merge
-6. Done; after the public PR is merged, the user may run `absorb` so `.pubgate-state-absorb` catches up to the new `public-remote/main` commit (recommended but not required before the next `stage`/`publish` cycle)
+6. Done; after the public PR is merged, the user may run `absorb` so `.pubgate-absorbed` catches up to the new `public-remote/main` commit (recommended but not required before the next `stage`/`publish` cycle)
 
 ## Core design principle: controlled divergence
 
@@ -142,4 +142,4 @@ The result is that divergence between the two repos is always controlled and bou
 
 ### State file conflicts on repeated publish without absorb
 
-If the user publishes multiple times without running `absorb` between cycles, each publish PR is based on the same absorbed commit. The `.pubgate-state-stage` file will have different values on the PR branch versus `public-remote/main` (from the previous publish merge), and both appear as "added" relative to the absorbed base, producing a guaranteed merge conflict on this file. The conflict is trivially resolvable by taking the newer value. Running `absorb` between publish cycles advances the baseline and eliminates this.
+If the user publishes multiple times without running `absorb` between cycles, each publish PR is based on the same absorbed commit. The `.pubgate-staged` file will have different values on the PR branch versus `public-remote/main` (from the previous publish merge), and both appear as "added" relative to the absorbed base, producing a guaranteed merge conflict on this file. The conflict is trivially resolvable by taking the newer value. Running `absorb` between publish cycles advances the baseline and eliminates this.

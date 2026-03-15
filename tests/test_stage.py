@@ -71,7 +71,7 @@ class TestStageIdempotent:
 
 class TestStageGuards:
     def test_stage_errors_without_bootstrap(self, topo: Topology):
-        # No absorb has been run, so .pubgate-state-absorb doesn't exist
+        # No absorb has been run, so .pubgate-absorbed doesn't exist
         with pytest.raises(PubGateError, match="no absorb state found"):
             topo.pubgate.stage()
 

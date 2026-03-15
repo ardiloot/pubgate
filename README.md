@@ -109,7 +109,7 @@ flowchart TD
    ```bash
    pubgate absorb
    ```
-   On first run, this records the current public repo HEAD as the starting point for future syncs. It creates a PR branch that records this baseline in a tracking file (`.pubgate-state-absorb`). Create a PR from that branch into `main` on your git host and merge it.
+   On first run, this records the current public repo HEAD as the starting point for future syncs. It creates a PR branch that records this baseline in a tracking file (`.pubgate-absorbed`). Create a PR from that branch into `main` on your git host and merge it.
 6. After your first `pubgate stage` run creates the `pubgate/public-approved` branch, protect it on your git host: require pull requests (no direct pushes) and optionally require approvals. This ensures content only reaches the approved branch through reviewed PRs — the leak-review gate.
 
 ## Workflow
@@ -149,8 +149,8 @@ Incorporating public contributions (absorb):
 
 **State files**
 
-- `.pubgate-state-absorb` (on `main`): tracks which public commit was last absorbed
-- `.pubgate-state-stage` (on `pubgate/public-approved`): tracks which internal commit was last staged
+- `.pubgate-absorbed` (on `main`): tracks which public commit was last absorbed
+- `.pubgate-staged` (on `pubgate/public-approved`): tracks which internal commit was last staged
 
 Created and updated automatically.
 
@@ -189,8 +189,8 @@ public_main_branch = "main"
 public_publish_branch = "pubgate/publish"
 
 # State tracking
-absorb_state_file = ".pubgate-state-absorb"
-stage_state_file = ".pubgate-state-stage"
+absorb_state_file = ".pubgate-absorbed"
+stage_state_file = ".pubgate-staged"
 
 # Filtering (fnmatch syntax; patterns match against both full path and basename)
 # These override the built-in defaults. Omit to use the defaults:
@@ -210,12 +210,12 @@ ignore = [
 - **Renames on public repo**: the new path is copied in; the old file is kept locally and flagged for review.
 - **Deletions on public repo**: deleted files are kept locally and flagged for review in the absorb PR.
 - **Merge conflicts**: absorb uses three-way merge. Conflicts produce standard git conflict markers (`<<<<<<<`/`=======`/`>>>>>>>`) for manual resolution.
-- **Sync artifacts**: absorb excludes both state files (`.pubgate-state-absorb`, `.pubgate-state-stage`) from the diff (they are sync artifacts, not external contributions). When only state files changed since the last absorb, the resulting PR only updates `.pubgate-state-absorb` (tracking-only).
+- **Sync artifacts**: absorb excludes both state files (`.pubgate-absorbed`, `.pubgate-staged`) from the diff (they are sync artifacts, not external contributions). When only state files changed since the last absorb, the resulting PR only updates `.pubgate-absorbed` (tracking-only).
 - **Empty files after scrubbing**: files that become empty after removing `BEGIN-INTERNAL` blocks are still included in the staged snapshot.
 - **External contribution between stage and publish**: if someone pushes to the public repo after you stage but before you publish, `publish` still proceeds: it bases the public PR on the last absorbed commit, and git's three-way merge preserves external contributions or surfaces conflicts in the public PR. For a clean snapshot, run `absorb` → merge absorb PR → `stage` → merge stage PR → `publish`.
 - **Stale branch cleanup**: after you merge a PR and its source branch is auto-deleted on the server, pubgate automatically prunes the stale local branch on the next run. No manual cleanup needed.
 - **Commit messages**: absorb commit messages list the public commits being absorbed (safe, they are already public). Stage commit messages list the internal commits since the last stage (safe, stays on the internal repo; useful context for the leak reviewer).
-- **Repeated publish without absorb**: if you publish multiple times without running `absorb` between cycles, each publish PR is based on the same absorbed commit. This produces a trivially resolvable merge conflict on `.pubgate-state-stage` in the public PR (take the newer value). Running `absorb` between cycles avoids this.
+- **Repeated publish without absorb**: if you publish multiple times without running `absorb` between cycles, each publish PR is based on the same absorbed commit. This produces a trivially resolvable merge conflict on `.pubgate-staged` in the public PR (take the newer value). Running `absorb` between cycles avoids this.
 - **Do not edit the pubgate PR branch directly**: the `pubgate/publish` branch must only contain content produced by `publish`. Manual edits to this branch before merging will be silently overwritten by the next publish cycle (they are not detected as external contributions). If published content needs a fix, make the change in the internal repo and re-run `stage` → `publish`.
 
 ## Troubleshooting
