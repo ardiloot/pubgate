@@ -96,7 +96,7 @@ class TestBranchNameCollision:
     def test_duplicate_branch_names_rejected(self, tmp_path: Path):
         config_path = tmp_path / "pubgate.toml"
         config_path.write_text(
-            'internal_main_branch = "main"\ninternal_preview_branch = "main"\n',
+            'internal_main_branch = "main"\ninternal_approved_branch = "main"\n',
             encoding="utf-8",
         )
 
@@ -106,7 +106,7 @@ class TestBranchNameCollision:
     def test_distinct_branch_names_pass(self):
         # Default config has all distinct branch names
         cfg = Config()
-        assert cfg.internal_main_branch != cfg.internal_preview_branch
+        assert cfg.internal_main_branch != cfg.internal_approved_branch
 
 
 class TestStateFileNameCollision:

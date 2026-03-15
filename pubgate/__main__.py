@@ -38,8 +38,8 @@ def build_parser() -> argparse.ArgumentParser:
     sub = parser.add_subparsers(dest="command")
     for cmd, help_text in (
         (Command.ABSORB.value, "Bring public repo changes into internal main via PR"),
-        (Command.STAGE.value, "Generate stage candidate and open internal PR into public-preview"),
-        (Command.PUBLISH.value, "Push reviewed public-preview content to the public repo and open PR"),
+        (Command.STAGE.value, "Generate stage candidate and open internal PR into pubgate/public-approved"),
+        (Command.PUBLISH.value, "Push reviewed pubgate/public-approved content to the public repo and open PR"),
     ):
         sp = sub.add_parser(cmd, help=help_text)
         _add_common_flags(sp)

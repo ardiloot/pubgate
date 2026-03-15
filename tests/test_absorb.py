@@ -23,7 +23,7 @@ class TestAbsorbBootstrap:
 
     def test_dry_run_skips_branch(self, topo: Topology):
         topo.pubgate.absorb(dry_run=True)
-        assert not topo.work_dir.git.branch_exists(topo.cfg.absorb_pr_branch)
+        assert not topo.work_dir.git.branch_exists(topo.cfg.internal_absorb_branch)
 
     def test_warns_no_prior_publish(self, topo: Topology, caplog):
         with caplog.at_level(logging.INFO, logger="pubgate"):
@@ -42,7 +42,7 @@ class TestAbsorbChanges:
         topo.bootstrap_absorb()
         topo.commit_to_public({"new-file.txt": "new content\n"})
         topo.pubgate.absorb()
-        content = topo.work_dir.read_file_at_ref(topo.cfg.absorb_pr_branch, "new-file.txt")
+        content = topo.work_dir.read_file_at_ref(topo.cfg.internal_absorb_branch, "new-file.txt")
         assert content is not None
         assert "new content" in content
 
@@ -53,7 +53,7 @@ class TestAbsorbChanges:
         with caplog.at_level(logging.INFO, logger="pubgate"):
             topo.pubgate.absorb()
         assert "kept local" in caplog.text
-        content = topo.work_dir.read_file_at_ref(topo.cfg.absorb_pr_branch, "shared.txt")
+        content = topo.work_dir.read_file_at_ref(topo.cfg.internal_absorb_branch, "shared.txt")
         assert content is not None
         assert "local content" in content
 
@@ -65,7 +65,7 @@ class TestAbsorbChanges:
         with caplog.at_level(logging.INFO, logger="pubgate"):
             topo.pubgate.absorb()
         assert "kept local" in caplog.text
-        content = topo.work_dir.read_file_at_ref(topo.cfg.absorb_pr_branch, "shared.txt")
+        content = topo.work_dir.read_file_at_ref(topo.cfg.internal_absorb_branch, "shared.txt")
         assert content is not None
         assert "BEGIN-INTERNAL" in content
         assert "secret" in content
@@ -80,7 +80,7 @@ class TestAbsorbChanges:
         with caplog.at_level(logging.INFO, logger="pubgate"):
             topo.pubgate.absorb()
         assert "kept local" in caplog.text
-        content = topo.work_dir.read_file_at_ref(topo.cfg.absorb_pr_branch, "shared.txt")
+        content = topo.work_dir.read_file_at_ref(topo.cfg.internal_absorb_branch, "shared.txt")
         assert content is not None
         assert "BEGIN-INTERNAL" in content
         assert "secret" in content
@@ -89,7 +89,7 @@ class TestAbsorbChanges:
         topo.bootstrap_absorb()
         topo.commit_to_public({"public-file.txt": "updated content\n"})
         topo.pubgate.absorb()
-        content = topo.work_dir.read_file_at_ref(topo.cfg.absorb_pr_branch, "public-file.txt")
+        content = topo.work_dir.read_file_at_ref(topo.cfg.internal_absorb_branch, "public-file.txt")
         assert content is not None
         assert "updated content" in content
 
@@ -98,18 +98,18 @@ class TestAbsorbChanges:
         # Absorb a file, then delete it on the public repo
         topo.commit_to_public({"deleteme.txt": "will be deleted\n"})
         topo.pubgate.absorb()
-        topo.merge_internal_pr(topo.cfg.absorb_pr_branch, "main")
+        topo.merge_internal_pr(topo.cfg.internal_absorb_branch, "main")
         topo.commit_to_public(delete=["deleteme.txt"])
         with caplog.at_level(logging.INFO, logger="pubgate"):
             topo.pubgate.absorb()
         assert "deleted on public" in caplog.text
-        assert "deleteme.txt" in topo.work_dir.list_files_at_ref(topo.cfg.absorb_pr_branch)
+        assert "deleteme.txt" in topo.work_dir.list_files_at_ref(topo.cfg.internal_absorb_branch)
 
     def test_multiple_changes(self, topo: Topology):
         topo.bootstrap_absorb()
         topo.commit_to_public({"public-file.txt": "updated\n", "extra.txt": "extra\n"})
         topo.pubgate.absorb()
-        topo.merge_internal_pr(topo.cfg.absorb_pr_branch, "main")
+        topo.merge_internal_pr(topo.cfg.internal_absorb_branch, "main")
         assert topo.work_dir.read_file_at_ref("main", "extra.txt") is not None
         assert "updated" in (topo.work_dir.read_file_at_ref("main", "public-file.txt") or "")
 
@@ -119,7 +119,7 @@ class TestAbsorbChanges:
         with caplog.at_level(logging.INFO, logger="pubgate"):
             topo.pubgate.absorb()
         assert "rename" in caplog.text.lower()
-        assert topo.work_dir.read_file_at_ref(topo.cfg.absorb_pr_branch, "renamed-file.txt") is not None
+        assert topo.work_dir.read_file_at_ref(topo.cfg.internal_absorb_branch, "renamed-file.txt") is not None
 
 
 class TestAbsorbMerge:
@@ -132,7 +132,7 @@ class TestAbsorbMerge:
             topo.pubgate.absorb()
         assert "merge (clean)" in caplog.text
 
-        merged = topo.work_dir.read_file_at_ref(topo.cfg.absorb_pr_branch, "public-file.txt")
+        merged = topo.work_dir.read_file_at_ref(topo.cfg.internal_absorb_branch, "public-file.txt")
         assert merged is not None
         lines = merged.splitlines()
         assert lines[0] == "INTERNAL"
@@ -148,7 +148,7 @@ class TestAbsorbMerge:
             topo.pubgate.absorb()
         assert "CONFLICTS" in caplog.text
 
-        conflicted = topo.work_dir.read_file_at_ref(topo.cfg.absorb_pr_branch, "public-file.txt")
+        conflicted = topo.work_dir.read_file_at_ref(topo.cfg.internal_absorb_branch, "public-file.txt")
         assert conflicted is not None
         assert "<<<<<<<" in conflicted
         assert "=======" in conflicted
@@ -157,7 +157,7 @@ class TestAbsorbMerge:
         assert "public version" in conflicted
 
         # Commit message should mention the conflicted file
-        commit_msg = topo.work_dir.run("log", "-1", "--format=%B", topo.cfg.absorb_pr_branch).strip()
+        commit_msg = topo.work_dir.run("log", "-1", "--format=%B", topo.cfg.internal_absorb_branch).strip()
         assert "CONFLICTS" in commit_msg
         assert "public-file.txt" in commit_msg
 
@@ -168,7 +168,7 @@ class TestAbsorbMerge:
         # Round 1: public changes line 3
         topo.commit_to_public({"public-file.txt": "line1\nline2\nPUBLIC-V1\n"})
         topo.pubgate.absorb()
-        topo.merge_internal_pr(topo.cfg.absorb_pr_branch, "main")
+        topo.merge_internal_pr(topo.cfg.internal_absorb_branch, "main")
 
         # Internal changes line 1 (file now has both changes on main)
         topo.commit_internal({"public-file.txt": "INTERNAL-V2\nline2\nPUBLIC-V1\n"}, push=True)
@@ -180,7 +180,7 @@ class TestAbsorbMerge:
         # The base for this merge is the round-1 public version (line1/line2/PUBLIC-V1).
         # Internal changed line 1 -> INTERNAL-V2, public changed line 3 -> PUBLIC-V2.
         # If base were wrong, internal's line-1 change would conflict.
-        merged = topo.work_dir.read_file_at_ref(topo.cfg.absorb_pr_branch, "public-file.txt")
+        merged = topo.work_dir.read_file_at_ref(topo.cfg.internal_absorb_branch, "public-file.txt")
         assert merged is not None
         lines = merged.splitlines()
         assert lines[0] == "INTERNAL-V2"
@@ -201,7 +201,7 @@ class TestAbsorbEdgeCases:
         with caplog.at_level(logging.INFO, logger="pubgate"):
             topo.pubgate.absorb(dry_run=True)
         assert "[dry-run]" in caplog.text
-        assert not topo.work_dir.git.branch_exists(topo.cfg.absorb_pr_branch)
+        assert not topo.work_dir.git.branch_exists(topo.cfg.internal_absorb_branch)
 
     def test_dirty_worktree_aborts(self, topo: Topology):
         (topo.work_dir.path / "dirty.txt").write_text("uncommitted\n", encoding="utf-8")
@@ -240,7 +240,7 @@ class TestAbsorbBinary:
         topo.commit_to_public({"logo.png": SAMPLE_PNG})
         topo.pubgate.absorb()
 
-        absorbed = topo.work_dir.git.read_file_at_ref_bytes(topo.cfg.absorb_pr_branch, "logo.png")
+        absorbed = topo.work_dir.git.read_file_at_ref_bytes(topo.cfg.internal_absorb_branch, "logo.png")
         assert absorbed == SAMPLE_PNG
 
     def test_non_utf8_file_absorbed_intact(self, topo: Topology):
@@ -248,7 +248,7 @@ class TestAbsorbBinary:
         topo.commit_to_public({"legacy.txt": SAMPLE_LATIN1})
         topo.pubgate.absorb()
 
-        absorbed = topo.work_dir.git.read_file_at_ref_bytes(topo.cfg.absorb_pr_branch, "legacy.txt")
+        absorbed = topo.work_dir.git.read_file_at_ref_bytes(topo.cfg.internal_absorb_branch, "legacy.txt")
         assert absorbed == SAMPLE_LATIN1
 
     def test_binary_file_modified(self, topo: Topology, caplog):
@@ -257,13 +257,13 @@ class TestAbsorbBinary:
         binary_v2 = b"\x00\x04\x05\x06"
         topo.commit_to_public({"data.bin": binary_v1})
         topo.pubgate.absorb()
-        topo.merge_internal_pr(topo.cfg.absorb_pr_branch, "main")
+        topo.merge_internal_pr(topo.cfg.internal_absorb_branch, "main")
         topo.commit_to_public({"data.bin": binary_v2})
         with caplog.at_level(logging.INFO, logger="pubgate"):
             topo.pubgate.absorb()
         assert "binary" in caplog.text.lower()
 
-        absorbed = topo.work_dir.git.read_file_at_ref_bytes(topo.cfg.absorb_pr_branch, "data.bin")
+        absorbed = topo.work_dir.git.read_file_at_ref_bytes(topo.cfg.internal_absorb_branch, "data.bin")
         assert absorbed == binary_v2
 
     def test_binary_added_on_public_kept_local(self, topo: Topology, caplog):
@@ -324,7 +324,7 @@ class TestMergeFileValidation:
         topo.bootstrap_absorb()
         topo.commit_to_public({"logo.png": b"\x89PNG\r\n\x1a\n\x00\x00\x00\rIHDR\x00\x01"})
         topo.pubgate.absorb()
-        topo.merge_internal_pr(topo.cfg.absorb_pr_branch, "main")
+        topo.merge_internal_pr(topo.cfg.internal_absorb_branch, "main")
 
         # Now modify the binary on public
         topo.commit_to_public({"logo.png": b"\x89PNG\r\n\x1a\n\x00\x00\x00\rIHDR\x00\x02"})
@@ -349,11 +349,11 @@ class TestAbsorbMixedChanges:
         topo.commit_to_public({"readme.txt": "hello world\n", "icon.png": SAMPLE_PNG}, "mixed text and binary")
         topo.pubgate.absorb()
 
-        content = topo.work_dir.read_file_at_ref(topo.cfg.absorb_pr_branch, "readme.txt")
+        content = topo.work_dir.read_file_at_ref(topo.cfg.internal_absorb_branch, "readme.txt")
         assert content is not None
         assert "hello world" in content
 
-        absorbed_bin = topo.work_dir.git.read_file_at_ref_bytes(topo.cfg.absorb_pr_branch, "icon.png")
+        absorbed_bin = topo.work_dir.git.read_file_at_ref_bytes(topo.cfg.internal_absorb_branch, "icon.png")
         assert absorbed_bin == SAMPLE_PNG
 
     def test_text_file_becomes_binary(self, topo: Topology, caplog):
@@ -361,27 +361,27 @@ class TestAbsorbMixedChanges:
         # First, push a text file
         topo.commit_to_public({"data.dat": "text content\n"})
         topo.pubgate.absorb()
-        topo.merge_internal_pr(topo.cfg.absorb_pr_branch, "main")
+        topo.merge_internal_pr(topo.cfg.internal_absorb_branch, "main")
 
         # Now replace with binary content
         binary_data = b"\x00\x01\x02\x03\x04\x05"
         topo.commit_to_public({"data.dat": binary_data})
         topo.pubgate.absorb()
 
-        absorbed = topo.work_dir.git.read_file_at_ref_bytes(topo.cfg.absorb_pr_branch, "data.dat")
+        absorbed = topo.work_dir.git.read_file_at_ref_bytes(topo.cfg.internal_absorb_branch, "data.dat")
         assert absorbed == binary_data
 
     def test_delete_and_add_simultaneous(self, topo: Topology):
         topo.bootstrap_absorb()
         topo.commit_to_public({"old-file.txt": "will be deleted\n"})
         topo.pubgate.absorb()
-        topo.merge_internal_pr(topo.cfg.absorb_pr_branch, "main")
+        topo.merge_internal_pr(topo.cfg.internal_absorb_branch, "main")
 
         # Delete old file, add new file in one commit
         topo.commit_to_public({"new-file.txt": "fresh content\n"}, "delete old, add new", delete=["old-file.txt"])
         topo.pubgate.absorb()
 
-        files = topo.work_dir.list_files_at_ref(topo.cfg.absorb_pr_branch)
+        files = topo.work_dir.list_files_at_ref(topo.cfg.internal_absorb_branch)
         assert "new-file.txt" in files
         # Deleted files are kept locally (by design)
         assert "old-file.txt" in files
@@ -401,7 +401,7 @@ class TestAbsorbModifyAfterPublish:
         assert "merge (clean)" in caplog.text
         assert "CONFLICTS" not in caplog.text
 
-        absorbed = topo.work_dir.read_file_at_ref(topo.cfg.absorb_pr_branch, "shared.txt")
+        absorbed = topo.work_dir.read_file_at_ref(topo.cfg.internal_absorb_branch, "shared.txt")
         assert absorbed is not None
         assert "BEGIN-INTERNAL" in absorbed
         assert "secret" in absorbed
@@ -424,7 +424,7 @@ class TestAbsorbModifyAfterPublish:
         assert "merge (clean)" in caplog.text
         assert "CONFLICTS" not in caplog.text
 
-        absorbed = topo.work_dir.read_file_at_ref(topo.cfg.absorb_pr_branch, "shared.txt")
+        absorbed = topo.work_dir.read_file_at_ref(topo.cfg.internal_absorb_branch, "shared.txt")
         assert absorbed is not None
         assert "BEGIN-INTERNAL" in absorbed
         assert "secret" in absorbed
@@ -449,7 +449,7 @@ class TestAbsorbModifyAfterPublish:
 
         assert "CONFLICTS" in caplog.text
 
-        absorbed = topo.work_dir.read_file_at_ref(topo.cfg.absorb_pr_branch, "shared.txt")
+        absorbed = topo.work_dir.read_file_at_ref(topo.cfg.internal_absorb_branch, "shared.txt")
         assert absorbed is not None
         assert "ours_footer" in absorbed
         assert "external_footer" in absorbed
@@ -466,7 +466,7 @@ class TestAbsorbModifyAfterPublish:
         assert "merge (clean)" in caplog.text
         assert "CONFLICTS" not in caplog.text
 
-        absorbed = topo.work_dir.read_file_at_ref(topo.cfg.absorb_pr_branch, "shared.txt")
+        absorbed = topo.work_dir.read_file_at_ref(topo.cfg.internal_absorb_branch, "shared.txt")
         assert absorbed is not None
         assert "modified_line2" in absorbed
 
@@ -478,7 +478,7 @@ class TestAbsorbModifyAfterPublish:
         topo.commit_internal({"shared.txt": internal_v1})
         topo.do_full_publish_cycle()
         topo.pubgate.absorb()
-        topo.merge_internal_pr(topo.cfg.absorb_pr_branch, "main")
+        topo.merge_internal_pr(topo.cfg.internal_absorb_branch, "main")
 
         # Second cycle: update secret + change visible lines
         internal_v2 = "header\n# BEGIN-INTERNAL\nsecret_v2\n# END-INTERNAL\nfinal_line2\nline3\nline4\nupdated_footer\n"
@@ -491,7 +491,7 @@ class TestAbsorbModifyAfterPublish:
         assert "merge (clean)" in caplog.text
         assert "CONFLICTS" not in caplog.text
 
-        absorbed = topo.work_dir.read_file_at_ref(topo.cfg.absorb_pr_branch, "shared.txt")
+        absorbed = topo.work_dir.read_file_at_ref(topo.cfg.internal_absorb_branch, "shared.txt")
         assert absorbed is not None
         assert "secret_v2" in absorbed
         assert "final_line2" in absorbed
@@ -518,7 +518,7 @@ class TestAbsorbModifyAfterPublish:
         assert "merge (clean)" in caplog.text
         assert "CONFLICTS" not in caplog.text
 
-        absorbed = topo.work_dir.read_file_at_ref(topo.cfg.absorb_pr_branch, "shared.txt")
+        absorbed = topo.work_dir.read_file_at_ref(topo.cfg.internal_absorb_branch, "shared.txt")
         assert absorbed is not None
         assert "BEGIN-INTERNAL" in absorbed
         assert "secret" in absorbed
@@ -539,7 +539,7 @@ class TestAbsorbMetadataOnly:
             topo.pubgate.absorb()
 
         # The absorb branch should have been created successfully
-        state = topo.work_dir.read_file_at_ref(topo.cfg.absorb_pr_branch, topo.cfg.absorb_state_file)
+        state = topo.work_dir.read_file_at_ref(topo.cfg.internal_absorb_branch, topo.cfg.absorb_state_file)
         assert state is not None
 
 
@@ -554,7 +554,7 @@ class TestAbsorbDryRunWithChanges:
         assert "[dry-run]" in caplog.text
         assert "dry-new.txt" in caplog.text
         # PR branch should not exist after dry-run
-        assert not topo.work_dir.git.branch_exists(topo.cfg.absorb_pr_branch)
+        assert not topo.work_dir.git.branch_exists(topo.cfg.internal_absorb_branch)
 
 
 class TestMergeFileMissingLocally:
@@ -563,7 +563,7 @@ class TestMergeFileMissingLocally:
         # Baseline: file exists on public
         topo.commit_to_public({"only-public.txt": "original\n"})
         topo.pubgate.absorb()
-        topo.merge_internal_pr(topo.cfg.absorb_pr_branch, "main")
+        topo.merge_internal_pr(topo.cfg.internal_absorb_branch, "main")
 
         # Remove the file locally
         topo.work_dir.delete_files(["only-public.txt"], "remove locally")
@@ -576,7 +576,7 @@ class TestMergeFileMissingLocally:
             topo.pubgate.absorb()
 
         assert "missing locally" in caplog.text
-        content = topo.work_dir.read_file_at_ref(topo.cfg.absorb_pr_branch, "only-public.txt")
+        content = topo.work_dir.read_file_at_ref(topo.cfg.internal_absorb_branch, "only-public.txt")
         assert content is not None
         assert "modified" in content
 
@@ -602,7 +602,7 @@ class TestAbsorbAddMergeConflict:
             topo.pubgate.absorb()
 
         assert "CONFLICTS" in caplog.text
-        content = topo.work_dir.read_file_at_ref(topo.cfg.absorb_pr_branch, "new-shared.txt")
+        content = topo.work_dir.read_file_at_ref(topo.cfg.internal_absorb_branch, "new-shared.txt")
         assert content is not None
         assert "ours_footer" in content
         assert "external_footer" in content

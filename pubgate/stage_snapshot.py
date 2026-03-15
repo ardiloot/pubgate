@@ -51,12 +51,12 @@ def snapshot_unchanged_ref(
     git: GitRepo,
     snapshot: dict[str, str | bytes],
 ) -> str | None:
-    if git.branch_exists(cfg.stage_pr_branch):
-        compare_ref = cfg.stage_pr_branch
+    if git.branch_exists(cfg.internal_stage_branch):
+        compare_ref = cfg.internal_stage_branch
         logger.debug("Comparing snapshot against existing PR branch %s", compare_ref)
-    elif git.remote_branch_exists("origin", cfg.internal_preview_branch):
-        compare_ref = f"origin/{cfg.internal_preview_branch}"
-        logger.debug("Comparing snapshot against origin/%s", cfg.internal_preview_branch)
+    elif git.remote_branch_exists("origin", cfg.internal_approved_branch):
+        compare_ref = f"origin/{cfg.internal_approved_branch}"
+        logger.debug("Comparing snapshot against origin/%s", cfg.internal_approved_branch)
     else:
         logger.debug("No previous snapshot to compare against")
         return "(empty)" if not snapshot else None
@@ -100,21 +100,21 @@ def stage_commit_message(
 
 
 def ensure_public_branch(cfg: Config, git: GitRepo) -> None:
-    if git.remote_branch_exists("origin", cfg.internal_preview_branch):
+    if git.remote_branch_exists("origin", cfg.internal_approved_branch):
         return
 
-    logger.info("Creating orphan branch '%s'...", cfg.internal_preview_branch)
-    git.checkout_orphan(cfg.internal_preview_branch)
+    logger.info("Creating orphan branch '%s'...", cfg.internal_approved_branch)
+    git.checkout_orphan(cfg.internal_approved_branch)
     try:
         git.rm_all_tracked()
         git.commit_allow_empty("pubgate: initialize public branch")
     except BaseException:
         try:
             git.checkout_safe(cfg.internal_main_branch)
-            git.delete_branch_safe(cfg.internal_preview_branch)
+            git.delete_branch_safe(cfg.internal_approved_branch)
         except Exception as cleanup_exc:
             logger.warning("Failed to clean up incomplete orphan branch: %s", cleanup_exc)
         raise
     git.checkout(cfg.internal_main_branch)
-    git.push(cfg.internal_preview_branch, "origin", cfg.internal_preview_branch)
-    logger.debug("Orphan branch '%s' created and pushed", cfg.internal_preview_branch)
+    git.push(cfg.internal_approved_branch, "origin", cfg.internal_approved_branch)
+    logger.debug("Orphan branch '%s' created and pushed", cfg.internal_approved_branch)

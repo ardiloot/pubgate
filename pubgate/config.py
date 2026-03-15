@@ -78,21 +78,19 @@ def _branch_scope_groups() -> dict[str, frozenset[str]]:
 class Config:
     # Internal repo
     internal_main_branch: str = _config_field("branch", scope="internal", default="main")
-    internal_preview_branch: str = _config_field("branch", scope="internal", default="public-preview")
+    internal_approved_branch: str = _config_field("branch", scope="internal", default="pubgate/public-approved")
+    internal_absorb_branch: str = _config_field("branch", scope="internal", default="pubgate/absorb")
+    internal_stage_branch: str = _config_field("branch", scope="internal", default="pubgate/stage")
 
     # Public repo
     public_url: str | None = _config_field("str", default=None)
     public_remote: str = _config_field("str", default="public-remote")
     public_main_branch: str = _config_field("branch", scope="public", default="main")
-    publish_pr_branch: str = _config_field("branch", scope="public", default="pubgate/publish")
-
-    # Sync branches (internal repo)
-    absorb_pr_branch: str = _config_field("branch", scope="internal", default="pubgate/absorb")
-    stage_pr_branch: str = _config_field("branch", scope="internal", default="pubgate/stage")
+    public_publish_branch: str = _config_field("branch", scope="public", default="pubgate/publish")
 
     # State tracking
-    absorb_state_file: str = _config_field("state", default=".pubgate-state-absorb")
-    stage_state_file: str = _config_field("state", default=".pubgate-state-stage")
+    absorb_state_file: str = _config_field("state", default=".pubgate-absorbed")
+    stage_state_file: str = _config_field("state", default=".pubgate-staged")
 
     # Filtering
     ignore: list[str] = _config_field("list", default_factory=lambda: list(DEFAULT_IGNORE_PATTERNS))
