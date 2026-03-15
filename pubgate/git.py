@@ -389,11 +389,11 @@ class GitRepo:
     # ------------------------------------------------------------------
 
     def commit(self, message: str) -> str:
-        self._run("commit", "-m", message)
+        self._run("commit", "--no-verify", "-m", message)
         return self.rev_parse("HEAD")
 
     def commit_allow_empty(self, message: str) -> str:
-        self._run("commit", "--allow-empty", "-m", message)
+        self._run("commit", "--allow-empty", "--no-verify", "-m", message)
         return self.rev_parse("HEAD")
 
     # ------------------------------------------------------------------
