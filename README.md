@@ -161,8 +161,9 @@ Created and updated automatically.
 | `pubgate stage` | Build a filtered snapshot of internal code and create a branch for leak review |
 | `pubgate publish` | Push reviewed content to a PR branch on the public repo |
 | `pubgate absorb` | Merge public contributions into an internal branch for review |
+| `pubgate status` | Show sync status of absorb, stage, and publish (read-only, fetches remotes) |
 
-Flags `--dry-run` and `--force` come after the command. `--repo-dir` comes before it.
+Flags `--dry-run`, `--force`, and `--no-pr` apply to `absorb`, `stage`, and `publish` (not `status`). Flags come after the command; `--repo-dir` comes before it.
 
 | Flag | Position | Description |
 |------|----------|-------------|
