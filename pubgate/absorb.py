@@ -144,7 +144,8 @@ def _apply_absorb_changes(
             _merge_file(git, base_sha, public_ref, change.path, actions, staged_sha=staged_sha)
 
         elif change.is_delete:
-            actions.append(f"  deleted on public (kept locally, review manually): {change.path}")
+            if (git.repo_dir / change.path).exists():
+                actions.append(f"  deleted on public (kept locally, review manually): {change.path}")
 
         elif change.is_rename:
             old_path = change.old_path or ""

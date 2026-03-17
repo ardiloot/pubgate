@@ -105,6 +105,22 @@ class TestAbsorbChanges:
         assert "deleted on public" in caplog.text
         assert "deleteme.txt" in topo.work_dir.list_files_at_ref(topo.cfg.internal_absorb_branch)
 
+    def test_delete_stage_publish_absorb(self, topo: Topology, caplog):
+        topo.bootstrap_absorb()
+        # Add a file internally and publish it to public
+        topo.commit_internal({"doomed.txt": "will be removed\n"})
+        topo.do_full_publish_cycle()
+        topo.absorb_and_merge()
+        # Delete the file internally, then publish the deletion
+        topo.work_dir.delete_files(["doomed.txt"], "remove doomed.txt")
+        topo.work_dir.push("origin", "main")
+        topo.do_full_publish_cycle()
+        # Absorb: file is gone on both sides, should not warn
+        with caplog.at_level(logging.INFO, logger="pubgate"):
+            topo.pubgate.absorb()
+        assert "doomed.txt" not in caplog.text
+        assert "doomed.txt" not in topo.work_dir.list_files_at_ref(topo.cfg.internal_absorb_branch)
+
     def test_multiple_changes(self, topo: Topology):
         topo.bootstrap_absorb()
         topo.commit_to_public({"public-file.txt": "updated\n", "extra.txt": "extra\n"})

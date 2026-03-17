@@ -15,6 +15,7 @@ class Command(enum.Enum):
     ABSORB = "absorb"
     STAGE = "stage"
     PUBLISH = "publish"
+    STATUS = "status"
 
 
 def _add_common_flags(subparser: argparse.ArgumentParser) -> None:
@@ -43,6 +44,8 @@ def build_parser() -> argparse.ArgumentParser:
     ):
         sp = sub.add_parser(cmd, help=help_text)
         _add_common_flags(sp)
+
+    sub.add_parser(Command.STATUS.value, help="Show sync status of absorb, stage, and publish")
 
     return parser
 
@@ -74,14 +77,17 @@ def main(argv: list[str] | None = None) -> None:
         git.ensure_remote(cfg.public_remote, cfg.public_url)
         pg = PubGate(cfg, git)
 
-        flags = dict(dry_run=args.dry_run, force=args.force, no_pr=args.no_pr)
-        match cmd:
-            case Command.ABSORB:
-                pg.absorb(**flags)
-            case Command.STAGE:
-                pg.stage(**flags)
-            case Command.PUBLISH:
-                pg.publish(**flags)
+        if cmd == Command.STATUS:
+            pg.status()
+        else:
+            flags = dict(dry_run=args.dry_run, force=args.force, no_pr=args.no_pr)
+            match cmd:
+                case Command.ABSORB:
+                    pg.absorb(**flags)
+                case Command.STAGE:
+                    pg.stage(**flags)
+                case Command.PUBLISH:
+                    pg.publish(**flags)
     except PubGateError as exc:
         logger.error("Command failed: %s", exc)
         sys.exit(1)

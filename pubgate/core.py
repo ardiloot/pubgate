@@ -14,9 +14,11 @@ from .state import AbsorbStatus, StateRef
 logger = logging.getLogger(__name__)
 
 
-def _log_commits(commits: list[CommitInfo]) -> None:
-    for i, c in enumerate(commits, 1):
+def _log_commits(commits: list[CommitInfo], *, limit: int = 10) -> None:
+    for i, c in enumerate(commits[:limit], 1):
         logger.info("  %d. %s", i, format_commit(c))
+    if len(commits) > limit:
+        logger.info("  ... and %d more", len(commits) - limit)
 
 
 def _split_message(msg: str) -> tuple[str, str]:
@@ -420,6 +422,11 @@ class PubGate:
                 extra_steps=["Run 'pubgate absorb' to sync tracking"],
                 no_pr=no_pr,
             )
+
+    def status(self) -> None:
+        from .status import report_status
+
+        report_status(self.cfg, self.git)
 
     # ------------------------------------------------------------------
     # Shared workflow (private)

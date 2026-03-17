@@ -68,10 +68,7 @@ def snapshot_unchanged_ref(
 
     for path in new_files:
         new_content = snapshot[path]
-        if isinstance(new_content, bytes):
-            old_content = git.read_file_at_ref_bytes(compare_ref, path)
-        else:
-            old_content = git.read_file_at_ref(compare_ref, path)
+        old_content = git.read_file_auto(compare_ref, path)
         if old_content != new_content:
             return None
     return compare_ref

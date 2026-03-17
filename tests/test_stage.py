@@ -260,6 +260,34 @@ class TestStageSkipsStateOnly:
         files = topo.work_dir.list_files_at_ref(topo.cfg.internal_stage_branch)
         assert "new-feature.txt" in files
 
+    def test_skips_when_crlf_only_diff(self, topo: Topology, caplog):
+        # Write a file with CRLF endings on the approved branch
+        topo.stage_and_merge()
+        topo.publish_and_merge()
+        topo.absorb_and_merge()
+
+        # Force CRLF content into the approved branch via a direct commit
+        from conftest import _git
+
+        merge_dir = topo.tmp_dir / "crlf-setup"
+        _git(topo.tmp_dir, "clone", str(topo.internal_server.bare_path), str(merge_dir))
+        _git(merge_dir, "checkout", topo.cfg.internal_approved_branch)
+        (merge_dir / "crlf-file.txt").write_bytes(b"line1\r\nline2\r\n")
+        _git(merge_dir, "-c", "core.autocrlf=false", "add", "crlf-file.txt")
+        _git(merge_dir, "commit", "-m", "add crlf file")
+        _git(merge_dir, "push", "origin", topo.cfg.internal_approved_branch)
+        topo.work_dir.fetch("origin")
+
+        # Also add the same file (with CRLF) to main
+        (topo.work_dir.path / "crlf-file.txt").write_bytes(b"line1\r\nline2\r\n")
+        _git(topo.work_dir.path, "-c", "core.autocrlf=false", "add", "crlf-file.txt")
+        _git(topo.work_dir.path, "commit", "-m", "add crlf file on main")
+        topo.work_dir.push("origin", "main")
+
+        with caplog.at_level(logging.INFO, logger="pubgate"):
+            topo.pubgate.stage()
+        assert "No changes to stage" in caplog.text
+
 
 class TestStageLogOnelineException:
     def test_stage_succeeds_when_log_oneline_fails(self, topo: Topology, caplog):
