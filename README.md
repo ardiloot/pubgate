@@ -74,6 +74,7 @@ flowchart TD
 - An existing internal repo with an `origin` remote
 - An existing public repo with at least one commit (e.g. a README created during repo setup)
 - *(Optional)* [`gh` CLI](https://cli.github.com/) authenticated via `gh auth login`. Enables automatic PR creation for GitHub-hosted repos. Without it, pubgate logs the manual steps instead.
+- *(Optional)* [Git LFS](https://git-lfs.com/) if your repo uses LFS-tracked files. pubgate auto-detects LFS and handles pointer files automatically. Without it, LFS-specific operations are silently skipped.
 - A clean worktree on `main`, synced with `origin` (no uncommitted changes, no unpushed commits)
 
 ### Setup
@@ -208,6 +209,7 @@ ignore = [
 ## Edge Cases
 
 - **Binary files**: included as-is in staged snapshots (`BEGIN-INTERNAL` markers inside binaries are not processed); during absorb, binary modifications take the public version and are flagged for manual review.
+- **Git LFS files**: LFS pointers pass through all pipelines without modification. LFS files are treated as binary (never merged, never scrubbed for internal markers). pubgate runs `git lfs fetch`/`push` automatically during absorb and publish. Use ignore patterns in `pubgate.toml` to exclude sensitive LFS files from publication. If LFS is not installed, these operations are silently skipped.
 - **Renames on public repo**: the new path is copied in; the old file is kept locally and flagged for review.
 - **Deletions on public repo**: deleted files are kept locally and flagged for review in the absorb PR.
 - **Merge conflicts**: absorb uses three-way merge. Conflicts produce standard git conflict markers (`<<<<<<<`/`=======`/`>>>>>>>`) for manual resolution.

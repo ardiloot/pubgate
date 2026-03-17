@@ -143,3 +143,16 @@ The result is that divergence between the two repos is always controlled and bou
 ### State file conflicts on repeated publish without absorb
 
 If the user publishes multiple times without running `absorb` between cycles, each publish PR is based on the same absorbed commit. The `.pubgate-staged` file will have different values on the PR branch versus `public-remote/main` (from the previous publish merge), and both appear as "added" relative to the absorbed base, producing a guaranteed merge conflict on this file. The conflict is trivially resolvable by taking the newer value. Running `absorb` between publish cycles advances the baseline and eliminates this.
+
+### Git LFS support
+
+pubgate supports repositories that use Git LFS. LFS support is auto-detected via `git lfs version` and requires no configuration.
+
+**How it works:** LFS-tracked files are stored as pointer files in git. pubgate reads and writes these pointers as-is; they pass through the snapshot, stage, and publish pipelines without modification. When files are staged with `git add`, git's clean/smudge filters handle the LFS encoding automatically via `.gitattributes`.
+
+**LFS object transfer:** pubgate runs `git lfs fetch` during command startups (absorb, publish) to ensure LFS objects are locally cached, and `git lfs push` after pushing branches to transfer LFS objects to the destination remote's LFS server.
+
+**Limitations:**
+- **LFS files are treated as binary**: they are never merged during `absorb` (copied/overwritten instead) and never scrubbed for `BEGIN-INTERNAL`/`END-INTERNAL` markers during `stage`. Do not place internal markers inside LFS-tracked files; use ignore patterns in `pubgate.toml` to exclude sensitive LFS files from publication.
+- **`.gitattributes` is included as-is** in the public snapshot (with internal-block scrubbing if markers are present). If internal `.gitattributes` contains LFS patterns for files excluded by pubgate's ignore rules, those orphan patterns will appear in the public repo. This is harmless but may be confusing. Use `BEGIN-INTERNAL`/`END-INTERNAL` markers in `.gitattributes` to exclude internal-only LFS patterns.
+- **When LFS is not installed**, pubgate's behavior is unchanged; LFS-specific operations (fetch, push) are silently skipped.

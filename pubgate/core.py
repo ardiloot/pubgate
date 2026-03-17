@@ -96,6 +96,7 @@ class PubGate:
                 work_fn=_bootstrap_work,
             )
             self._push_to_remote(cfg.internal_absorb_branch, "origin", cfg.internal_absorb_branch, force=force)
+            self.git.lfs_push("origin", cfg.internal_absorb_branch)
             title = f"pubgate: initialize absorb tracking at {public_head[:7]}"
             self._handle_pr(
                 remote="origin",
@@ -175,6 +176,7 @@ class PubGate:
             work_fn=_absorb_work,
         )
         self._push_to_remote(cfg.internal_absorb_branch, "origin", cfg.internal_absorb_branch, force=force)
+        self.git.lfs_push("origin", cfg.internal_absorb_branch)
         full_msg = absorb_commit_message(git, last_absorbed, public_head)
         title, body = _split_message(full_msg)
         self._handle_pr(
@@ -400,6 +402,7 @@ class PubGate:
 
         def _publish_push() -> None:
             self._push_to_remote(cfg.public_publish_branch, cfg.public_remote, cfg.public_publish_branch, force=force)
+            self.git.lfs_push(cfg.public_remote, cfg.public_publish_branch)
 
         committed = self._run_on_pr_branch(
             branch=cfg.public_publish_branch,
@@ -515,6 +518,7 @@ class PubGate:
         logger.debug("Starting absorb startup")
         self._require_on_main()
         self.git.fetch(self.cfg.public_remote)
+        self.git.lfs_fetch(self.cfg.public_remote, self.cfg.public_main_branch)
         self._prune_internal_pr_branches()
         self._prune_public_publish_branch()
         return check_absorb(self.cfg, self.git)
@@ -531,6 +535,7 @@ class PubGate:
         git, cfg = self.git, self.cfg
         git.ensure_clean_worktree()
         git.fetch("origin")
+        git.lfs_fetch("origin", cfg.internal_approved_branch)
         git.fetch(cfg.public_remote)
         self._prune_public_publish_branch()
 

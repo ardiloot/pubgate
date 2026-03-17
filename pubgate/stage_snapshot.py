@@ -3,7 +3,7 @@ import logging
 from .config import Config
 from .errors import PubGateError
 from .filtering import check_conflict_markers, check_residual_markers, is_ignored, scrub_internal_blocks
-from .git import GitRepo
+from .git import GitRepo, is_lfs_pointer
 from .models import format_commit
 from .state import StateRef
 
@@ -18,6 +18,7 @@ def build_stage_snapshot(
 ) -> dict[str, str | bytes]:
     all_files = git.ls_tree(ref)
     snapshot: dict[str, str | bytes] = {}
+    lfs_files: list[str] = []
 
     for path in all_files:
         if path in excluded:
@@ -33,6 +34,10 @@ def build_stage_snapshot(
 
         if isinstance(content, bytes):
             snapshot[path] = content
+        elif is_lfs_pointer(content):
+            logger.debug("LFS pointer (skipping scrub): %s", path)
+            lfs_files.append(path)
+            snapshot[path] = content
         else:
             try:
                 content = scrub_internal_blocks(content, path=path)
@@ -42,6 +47,10 @@ def build_stage_snapshot(
                 raise PubGateError(f"Error: {exc}") from exc
             snapshot[path] = content
 
+    if lfs_files:
+        logger.info("Snapshot includes %d LFS-tracked %s", len(lfs_files), "file" if len(lfs_files) == 1 else "files")
+        for path in lfs_files:
+            logger.debug("  LFS: %s", path)
     logger.debug("Snapshot contains %d files", len(snapshot))
     return snapshot
 

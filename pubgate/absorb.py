@@ -5,7 +5,7 @@ from pathlib import Path
 from .config import Config
 from .errors import GitError, PubGateError
 from .filtering import scrub_internal_blocks
-from .git import GitRepo
+from .git import GitRepo, is_lfs_pointer
 from .models import format_commit
 from .state import AbsorbStatus, StateRef
 
@@ -88,6 +88,13 @@ def absorb_commit_message(
 # ---------------------------------------------------------------------------
 
 
+def _read_text_at_ref(git: GitRepo, ref: str, path: str) -> str | None:
+    data = git.read_file_at_ref_bytes(ref, path)
+    if data is None:
+        return None
+    return data.decode("utf-8")
+
+
 def _apply_absorb_changes(
     git: GitRepo,
     base_sha: str,
@@ -106,10 +113,12 @@ def _apply_absorb_changes(
         if change.is_add:
             local_path = git.repo_dir / change.path
             if local_path.exists():
-                if git.is_binary_at_ref(public_ref, change.path):
-                    actions.append(f"  added on public (kept local version, review manually): {change.path}")
+                kind = git.classify_at_ref(public_ref, change.path)
+                if kind != "text":
+                    label = "LFS file" if kind == "lfs" else "binary"
+                    actions.append(f"  {label} added on public (kept local version, review manually): {change.path}")
                 else:
-                    theirs_content = git.read_file_at_ref(public_ref, change.path)
+                    theirs_content = _read_text_at_ref(git, public_ref, change.path)
                     if theirs_content is None:
                         actions.append(f"  added on public (kept local version, review manually): {change.path}")
                         continue
@@ -117,7 +126,7 @@ def _apply_absorb_changes(
                     # the file at the internal commit that was staged.
                     published_base: str | None = None
                     if staged_sha is not None:
-                        staged_content = git.read_file_at_ref(staged_sha, change.path)
+                        staged_content = _read_text_at_ref(git, staged_sha, change.path)
                         if staged_content is not None:
                             published_base = scrub_internal_blocks(staged_content, path=change.path)
                     if published_base is not None:
@@ -125,8 +134,8 @@ def _apply_absorb_changes(
                         with tempfile.TemporaryDirectory() as tmpdir:
                             base_tmp = Path(tmpdir) / "base"
                             theirs_tmp = Path(tmpdir) / "theirs"
-                            base_tmp.write_text(published_base, encoding="utf-8")
-                            theirs_tmp.write_text(theirs_content, encoding="utf-8")
+                            base_tmp.write_text(published_base, encoding="utf-8", newline="")
+                            theirs_tmp.write_text(theirs_content, encoding="utf-8", newline="")
                             clean = git.merge_file(local_path, base_tmp, theirs_tmp)
                             git.stage(change.path)
                             if clean:
@@ -138,7 +147,13 @@ def _apply_absorb_changes(
                         actions.append(f"  added on public (kept local, review manually): {change.path}")
             else:
                 is_binary = git.copy_file_from_ref(public_ref, change.path)
-                actions.append(f"  add{' (binary)' if is_binary else ''}: {change.path}")
+                if is_binary:
+                    with open(git.repo_dir / change.path, "rb") as f:
+                        head = f.read(1024)
+                    tag = " (LFS)" if is_lfs_pointer(head) else " (binary)"
+                else:
+                    tag = ""
+                actions.append(f"  add{tag}: {change.path}")
 
         elif change.is_modify:
             _merge_file(git, base_sha, public_ref, change.path, actions, staged_sha=staged_sha)
@@ -175,7 +190,8 @@ def _merge_file(
                 f"at {public_ref}. Repository may have corrupt objects.",
             )
         git.write_file_and_stage_bytes(path, theirs_bytes)
-        actions.append(f"  binary changed on public (replaced locally, review manually): {path}")
+        label = "LFS file" if is_lfs_pointer(theirs_bytes) else "binary"
+        actions.append(f"  {label} changed on public (replaced locally, review manually): {path}")
         return
 
     # Use the scrubbed staged content as merge base when available.
@@ -184,12 +200,12 @@ def _merge_file(
     # old public content (which would cause false conflicts on internal blocks).
     base_content: str | None = None
     if staged_sha is not None:
-        staged_content = git.read_file_at_ref(staged_sha, path)
+        staged_content = _read_text_at_ref(git, staged_sha, path)
         if staged_content is not None:
             base_content = scrub_internal_blocks(staged_content, path=path)
     if base_content is None:
-        base_content = git.read_file_at_ref(base_sha, path)
-    theirs_content = git.read_file_at_ref(public_ref, path)
+        base_content = _read_text_at_ref(git, base_sha, path)
+    theirs_content = _read_text_at_ref(git, public_ref, path)
 
     if base_content is None or theirs_content is None:
         missing_ref = base_sha if base_content is None else public_ref
@@ -210,8 +226,8 @@ def _merge_file(
     with tempfile.TemporaryDirectory() as tmpdir:
         base_tmp = Path(tmpdir) / "base"
         theirs_tmp = Path(tmpdir) / "theirs"
-        base_tmp.write_text(base_content, encoding="utf-8")
-        theirs_tmp.write_text(theirs_content, encoding="utf-8")
+        base_tmp.write_text(base_content, encoding="utf-8", newline="")
+        theirs_tmp.write_text(theirs_content, encoding="utf-8", newline="")
 
         clean = git.merge_file(ours_path, base_tmp, theirs_tmp)
         git.stage(path)
