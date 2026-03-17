@@ -319,15 +319,15 @@ class TestMergeFileValidation:
         # three-way merge path (not the "missing locally" shortcut)
         topo.commit_internal({"tracked.txt": "original\n"}, push=True)
 
-        # Patch read_file_at_ref to return None for tracked.txt only
-        original_read = GitRepo.read_file_at_ref
+        # Patch read_file_at_ref_bytes to return None for tracked.txt only
+        original_read = GitRepo.read_file_at_ref_bytes
 
         def fake_read(self, ref, path):
             if path == "tracked.txt":
                 return None
             return original_read(self, ref, path)
 
-        with patch.object(GitRepo, "read_file_at_ref", fake_read):
+        with patch.object(GitRepo, "read_file_at_ref_bytes", fake_read):
             with pytest.raises(PubGateError, match="unreadable"):
                 topo.pubgate.absorb()
 
@@ -635,3 +635,46 @@ class TestAbsorbStageStateUnreadable:
             topo.pubgate.absorb()
 
         assert "Could not read stage state" in caplog.text
+
+
+class TestAbsorbCRLF:
+    def test_new_file_preserves_crlf(self, topo: Topology):
+        from conftest import _git
+
+        topo.bootstrap_absorb()
+
+        # Force a CRLF file into public repo (bypass autocrlf normalization)
+        ext_path = topo.external_contributor.path
+        (ext_path / "crlf.txt").write_bytes(b"line1\r\nline2\r\n")
+        _git(ext_path, "-c", "core.autocrlf=false", "add", "crlf.txt")
+        _git(ext_path, "commit", "-m", "add crlf file")
+        topo.external_contributor.push("origin", "main")
+
+        topo.pubgate.absorb()
+
+        raw = topo.work_dir.git.read_file_at_ref_bytes(topo.cfg.internal_absorb_branch, "crlf.txt")
+        assert raw == b"line1\r\nline2\r\n"
+
+    def test_modified_file_merge_preserves_crlf(self, topo: Topology):
+        from conftest import _git
+
+        # Set up a file with CRLF on public
+        ext_path = topo.external_contributor.path
+        (ext_path / "shared.txt").write_bytes(b"line1\r\nline2\r\n")
+        _git(ext_path, "-c", "core.autocrlf=false", "add", "shared.txt")
+        _git(ext_path, "commit", "-m", "add shared with crlf")
+        topo.external_contributor.push("origin", "main")
+
+        topo.bootstrap_absorb()
+
+        # Modify the file on public (keep CRLF)
+        (ext_path / "shared.txt").write_bytes(b"line1\r\nline2\r\nline3\r\n")
+        _git(ext_path, "-c", "core.autocrlf=false", "add", "shared.txt")
+        _git(ext_path, "commit", "-m", "modify shared with crlf")
+        topo.external_contributor.push("origin", "main")
+
+        topo.pubgate.absorb()
+
+        raw = topo.work_dir.git.read_file_at_ref_bytes(topo.cfg.internal_absorb_branch, "shared.txt")
+        assert raw is not None
+        assert b"\r\n" in raw

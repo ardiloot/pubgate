@@ -345,7 +345,7 @@ class GitRepo:
     def write_file_and_stage(self, repo_relative_path: str, content: str) -> None:
         full_path = self.repo_dir / repo_relative_path
         full_path.parent.mkdir(parents=True, exist_ok=True)
-        full_path.write_text(content, encoding="utf-8")
+        full_path.write_text(content, encoding="utf-8", newline="")
         self._run("add", repo_relative_path)
 
     def write_file_and_stage_bytes(self, repo_relative_path: str, content: bytes) -> None:
@@ -370,19 +370,13 @@ class GitRepo:
         self._run("rm", "-rf", "--ignore-unmatch", ".", check=False)
 
     def copy_file_from_ref(self, ref: str, path: str) -> bool:
-        if self.is_binary_at_ref(ref, path):
-            content = self.read_file_at_ref_bytes(ref, path)
-            if content is not None:
-                self.write_file_and_stage_bytes(path, content)
-            else:
-                logger.warning("Could not read binary file %s at %s (skipped)", path, ref)
-            return True
-        content = self.read_file_at_ref(ref, path)
-        if content is not None:
-            self.write_file_and_stage(path, content)
-        else:
+        content = self.read_file_auto(ref, path)
+        if content is None:
             logger.warning("Could not read file %s at %s (skipped)", path, ref)
-        return False
+            return False
+        is_binary = isinstance(content, bytes)
+        self.write_file_and_stage_auto(path, content)
+        return is_binary
 
     # ------------------------------------------------------------------
     # Commits

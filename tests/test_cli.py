@@ -251,8 +251,7 @@ class TestCopyFileFromRefWarning:
 
         git = topo.work_dir.git
         with (
-            mock_patch.object(git, "is_binary_at_ref", return_value=False),
-            mock_patch.object(git, "read_file_at_ref", return_value=None),
+            mock_patch.object(git, "read_file_at_ref_bytes", return_value=None),
             caplog.at_level(logging.WARNING, logger="pubgate"),
         ):
             git.copy_file_from_ref("HEAD", "ghost.txt")
@@ -263,12 +262,11 @@ class TestCopyFileFromRefWarning:
         from unittest.mock import patch as mock_patch
 
         with (
-            mock_patch.object(git, "is_binary_at_ref", return_value=True),
             mock_patch.object(git, "read_file_at_ref_bytes", return_value=None),
             caplog.at_level(logging.WARNING, logger="pubgate"),
         ):
             git.copy_file_from_ref("HEAD", "ghost.bin")
-        assert "Could not read binary file" in caplog.text
+        assert "Could not read file" in caplog.text
 
 
 class TestBranchSyncValidation:
