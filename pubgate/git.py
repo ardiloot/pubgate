@@ -13,9 +13,24 @@ _TIMEOUT_LOCAL = 60
 _TIMEOUT_NETWORK = 300
 
 
+_LFS_POINTER_PREFIX = b"version https://git-lfs.github.com/spec/v1\n"
+_LFS_POINTER_MAX_LEN = 512
+
+
+def is_lfs_pointer(data: str | bytes) -> bool:
+    if isinstance(data, str):
+        data = data.encode("utf-8")
+    if len(data) > _LFS_POINTER_MAX_LEN:
+        return False
+    if not data.startswith(_LFS_POINTER_PREFIX):
+        return False
+    return b"\noid sha256:" in data and b"\nsize " in data
+
+
 class GitRepo:
     def __init__(self, repo_dir: Path) -> None:
         self.repo_dir = repo_dir
+        self._lfs_available: bool | None = None
 
     # ------------------------------------------------------------------
     # Internal runners
@@ -309,18 +324,23 @@ class GitRepo:
             )
         return result.stdout
 
-    def is_binary_at_ref(self, ref: str, path: str) -> bool:
+    def classify_at_ref(self, ref: str, path: str) -> str:
         data = self.read_file_at_ref_bytes(ref, path)
         if data is None:
-            return False
+            return "text"
+        if is_lfs_pointer(data):
+            return "lfs"
         chunk = data[:8192]
         if b"\x00" in chunk:
-            return True
+            return "binary"
         try:
             chunk.decode("utf-8")
         except UnicodeDecodeError:
-            return True
-        return False
+            return "binary"
+        return "text"
+
+    def is_binary_at_ref(self, ref: str, path: str) -> bool:
+        return self.classify_at_ref(ref, path) != "text"
 
     def read_file_auto(self, ref: str, path: str) -> str | bytes | None:
         data = self.read_file_at_ref_bytes(ref, path)
@@ -374,7 +394,7 @@ class GitRepo:
         if content is None:
             logger.warning("Could not read file %s at %s (skipped)", path, ref)
             return False
-        is_binary = isinstance(content, bytes)
+        is_binary = isinstance(content, bytes) or is_lfs_pointer(content)
         self.write_file_and_stage_auto(path, content)
         return is_binary
 
@@ -401,3 +421,33 @@ class GitRepo:
     def is_ancestor(self, ancestor: str, descendant: str) -> bool:
         result = self._run("merge-base", "--is-ancestor", ancestor, descendant, check=False)
         return result.returncode == 0
+
+    # ------------------------------------------------------------------
+    # LFS operations
+    # ------------------------------------------------------------------
+
+    def is_lfs_available(self) -> bool:
+        if self._lfs_available is None:
+            result = self._run("lfs", "version", check=False)
+            self._lfs_available = result.returncode == 0
+            if self._lfs_available:
+                logger.debug("Git LFS available: %s", result.stdout.strip())
+            else:
+                logger.debug("Git LFS not available")
+        return self._lfs_available
+
+    def lfs_fetch(self, remote: str, ref: str) -> None:
+        if not self.is_lfs_available():
+            return
+        logger.info("Fetching LFS objects from %s for %s", remote, ref)
+        result = self._run("lfs", "fetch", remote, ref, check=False, timeout=_TIMEOUT_NETWORK)
+        if result.returncode != 0:
+            logger.warning("LFS fetch failed (exit %d): %s", result.returncode, result.stderr.strip())
+
+    def lfs_push(self, remote: str, branch: str) -> None:
+        if not self.is_lfs_available():
+            return
+        logger.info("Pushing LFS objects to %s for %s", remote, branch)
+        result = self._run("lfs", "push", remote, branch, check=False, timeout=_TIMEOUT_NETWORK)
+        if result.returncode != 0:
+            logger.warning("LFS push failed (exit %d): %s", result.returncode, result.stderr.strip())

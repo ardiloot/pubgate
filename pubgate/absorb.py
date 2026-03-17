@@ -5,7 +5,7 @@ from pathlib import Path
 from .config import Config
 from .errors import GitError, PubGateError
 from .filtering import scrub_internal_blocks
-from .git import GitRepo
+from .git import GitRepo, is_lfs_pointer
 from .models import format_commit
 from .state import AbsorbStatus, StateRef
 
@@ -113,8 +113,10 @@ def _apply_absorb_changes(
         if change.is_add:
             local_path = git.repo_dir / change.path
             if local_path.exists():
-                if git.is_binary_at_ref(public_ref, change.path):
-                    actions.append(f"  added on public (kept local version, review manually): {change.path}")
+                kind = git.classify_at_ref(public_ref, change.path)
+                if kind != "text":
+                    label = "LFS file" if kind == "lfs" else "binary"
+                    actions.append(f"  {label} added on public (kept local version, review manually): {change.path}")
                 else:
                     theirs_content = _read_text_at_ref(git, public_ref, change.path)
                     if theirs_content is None:
@@ -145,7 +147,13 @@ def _apply_absorb_changes(
                         actions.append(f"  added on public (kept local, review manually): {change.path}")
             else:
                 is_binary = git.copy_file_from_ref(public_ref, change.path)
-                actions.append(f"  add{' (binary)' if is_binary else ''}: {change.path}")
+                if is_binary:
+                    with open(git.repo_dir / change.path, "rb") as f:
+                        head = f.read(1024)
+                    tag = " (LFS)" if is_lfs_pointer(head) else " (binary)"
+                else:
+                    tag = ""
+                actions.append(f"  add{tag}: {change.path}")
 
         elif change.is_modify:
             _merge_file(git, base_sha, public_ref, change.path, actions, staged_sha=staged_sha)
@@ -182,7 +190,8 @@ def _merge_file(
                 f"at {public_ref}. Repository may have corrupt objects.",
             )
         git.write_file_and_stage_bytes(path, theirs_bytes)
-        actions.append(f"  binary changed on public (replaced locally, review manually): {path}")
+        label = "LFS file" if is_lfs_pointer(theirs_bytes) else "binary"
+        actions.append(f"  {label} changed on public (replaced locally, review manually): {path}")
         return
 
     # Use the scrubbed staged content as merge base when available.
