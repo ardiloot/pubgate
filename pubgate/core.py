@@ -152,6 +152,8 @@ class PubGate:
             )
             return
 
+        git.lfs_fetch(cfg.public_remote, public_head)
+
         def _absorb_work() -> bool:
             actions = resolve_and_apply(cfg, git, last_absorbed, public_head)
             if actions:
@@ -163,7 +165,8 @@ class PubGate:
                     logger.info("%s", a)
             git.write_file_and_stage(cfg.absorb_state_file, public_head + "\n")
             conflicted = [a.split(": ", 1)[1] for a in actions if "CONFLICTS" in a]
-            msg = absorb_commit_message(git, last_absorbed, public_head, conflicted)
+            needs_review = [a.strip() for a in actions if "review manually" in a]
+            msg = absorb_commit_message(git, last_absorbed, public_head, conflicted, needs_review)
             sha = git.commit(msg)
             logger.info("Committed on %s (%s %s)", cfg.internal_absorb_branch, sha[:7], msg.split("\n", 1)[0])
             return True
@@ -198,7 +201,9 @@ class PubGate:
         origin_preview_ref = f"origin/{cfg.internal_approved_branch}"
 
         ignore_patterns = list(cfg.ignore)
-        snapshot = build_stage_snapshot(git, cfg.internal_main_branch, ignore_patterns, frozenset({CONFIG_FILE}))
+        snapshot, lfs_count = build_stage_snapshot(
+            git, cfg.internal_main_branch, ignore_patterns, frozenset({CONFIG_FILE})
+        )
 
         unchanged_ref = snapshot_unchanged_ref(cfg, git, snapshot)
         if unchanged_ref is not None:
@@ -232,6 +237,9 @@ class PubGate:
                 logger.info("Staging changes into %s", cfg.internal_approved_branch)
         else:
             logger.info("Staging changes into %s", cfg.internal_approved_branch)
+
+        if lfs_count:
+            logger.info("Snapshot includes %d LFS-tracked %s", lfs_count, "file" if lfs_count == 1 else "files")
 
         if dry_run:
             logger.info("[dry-run] Would commit on %s", cfg.internal_stage_branch)
@@ -383,6 +391,8 @@ class PubGate:
             )
             return
 
+        git.lfs_fetch("origin", origin_preview_ref)
+
         def _publish_work() -> bool:
             existing = git.ls_tree("HEAD")
             for path in existing:
@@ -518,7 +528,6 @@ class PubGate:
         logger.debug("Starting absorb startup")
         self._require_on_main()
         self.git.fetch(self.cfg.public_remote)
-        self.git.lfs_fetch(self.cfg.public_remote, self.cfg.public_main_branch)
         self._prune_internal_pr_branches()
         self._prune_public_publish_branch()
         return check_absorb(self.cfg, self.git)
@@ -535,7 +544,6 @@ class PubGate:
         git, cfg = self.git, self.cfg
         git.ensure_clean_worktree()
         git.fetch("origin")
-        git.lfs_fetch("origin", cfg.internal_approved_branch)
         git.fetch(cfg.public_remote)
         self._prune_public_publish_branch()
 

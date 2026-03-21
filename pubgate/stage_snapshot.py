@@ -15,7 +15,7 @@ def build_stage_snapshot(
     ref: str,
     ignore_patterns: list[str],
     excluded: frozenset[str],
-) -> dict[str, str | bytes]:
+) -> tuple[dict[str, str | bytes], int]:
     all_files = git.ls_tree(ref)
     snapshot: dict[str, str | bytes] = {}
     lfs_files: list[str] = []
@@ -47,12 +47,10 @@ def build_stage_snapshot(
                 raise PubGateError(f"Error: {exc}") from exc
             snapshot[path] = content
 
-    if lfs_files:
-        logger.info("Snapshot includes %d LFS-tracked %s", len(lfs_files), "file" if len(lfs_files) == 1 else "files")
-        for path in lfs_files:
-            logger.debug("  LFS: %s", path)
+    for path in lfs_files:
+        logger.debug("  LFS: %s", path)
     logger.debug("Snapshot contains %d files", len(snapshot))
-    return snapshot
+    return snapshot, len(lfs_files)
 
 
 def snapshot_unchanged_ref(

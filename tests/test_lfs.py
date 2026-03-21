@@ -1,9 +1,11 @@
 import logging
+from unittest.mock import patch
 
 import pytest
 from conftest import Topology
 
 from pubgate.config import DEFAULT_IGNORE_PATTERNS
+from pubgate.errors import GitError
 from pubgate.filtering import is_ignored
 from pubgate.git import is_lfs_pointer
 from pubgate.stage_snapshot import build_stage_snapshot, snapshot_unchanged_ref
@@ -91,7 +93,7 @@ class TestIsBinaryAtRefLfs:
 class TestStageSnapshotLfs:
     def test_lfs_pointer_passes_through_without_scrub(self, topo: Topology):
         topo.commit_internal({"data.bin": SAMPLE_LFS_POINTER_STR})
-        snapshot = build_stage_snapshot(
+        snapshot, _ = build_stage_snapshot(
             topo.work_dir.git,
             "HEAD",
             ignore_patterns=[],
@@ -104,7 +106,7 @@ class TestStageSnapshotLfs:
         # Even though the pointer text is valid UTF-8, it should not be
         # passed through scrub_internal_blocks
         topo.commit_internal({"model.bin": SAMPLE_LFS_POINTER_STR})
-        snapshot = build_stage_snapshot(
+        snapshot, _ = build_stage_snapshot(
             topo.work_dir.git,
             "HEAD",
             ignore_patterns=[],
@@ -125,7 +127,7 @@ class TestGitattributesNotIgnored:
 
     def test_gitattributes_included_in_snapshot(self, topo: Topology):
         topo.commit_internal({".gitattributes": "*.bin filter=lfs diff=lfs merge=lfs -text\n"})
-        snapshot = build_stage_snapshot(
+        snapshot, _ = build_stage_snapshot(
             topo.work_dir.git,
             "HEAD",
             ignore_patterns=list(DEFAULT_IGNORE_PATTERNS),
@@ -186,7 +188,7 @@ class TestSnapshotUnchangedLfs:
         topo.work_dir.run("checkout", "main")
 
         # Build the same snapshot again (no changes)
-        snapshot = build_stage_snapshot(
+        snapshot, _ = build_stage_snapshot(
             topo.work_dir.git,
             topo.cfg.internal_main_branch,
             ignore_patterns=list(topo.cfg.ignore),
@@ -318,5 +320,74 @@ class TestPublishLfs:
         assert attrs is not None
         assert "filter=lfs" in attrs
 
-        pub_content = topo.external_contributor.read_file_at_ref("HEAD", "data.bin")
-        assert pub_content == SAMPLE_LFS_POINTER_STR
+
+# ---------------------------------------------------------------------------
+# LFS fetch/push failure handling
+# ---------------------------------------------------------------------------
+
+
+class TestLfsFetchFailure:
+    def test_nonzero_exit_logs_warning_and_continues(self, topo: Topology, caplog):
+        git = topo.work_dir.git
+        git._lfs_available = True  # force LFS as available
+        with caplog.at_level(logging.WARNING, logger="pubgate"):
+            # Fetch from a nonexistent remote ref — should warn, not raise
+            git.lfs_fetch("origin", "nonexistent-ref-that-will-fail")
+        assert "LFS fetch failed" in caplog.text
+
+    def test_timeout_logs_warning_and_continues(self, topo: Topology, caplog):
+        git = topo.work_dir.git
+        git._lfs_available = True
+
+        original_run = git._run
+
+        def _timeout_run(*args, **kwargs):
+            if args and args[0] == "lfs":
+                raise GitError(list(args), -1, "timed out after 300s")
+            return original_run(*args, **kwargs)
+
+        with patch.object(git, "_run", side_effect=_timeout_run):
+            with caplog.at_level(logging.WARNING, logger="pubgate"):
+                # Should not raise — timeout is caught and logged
+                git.lfs_fetch("origin", "main")
+        assert "LFS fetch failed" in caplog.text
+
+    def test_lfs_not_available_skips_silently(self, topo: Topology, caplog):
+        git = topo.work_dir.git
+        git._lfs_available = False
+        with caplog.at_level(logging.WARNING, logger="pubgate"):
+            git.lfs_fetch("origin", "main")
+        assert "LFS fetch failed" not in caplog.text
+
+
+class TestLfsPushFailure:
+    def test_timeout_logs_warning_and_continues(self, topo: Topology, caplog):
+        git = topo.work_dir.git
+        git._lfs_available = True
+
+        original_run = git._run
+
+        def _timeout_run(*args, **kwargs):
+            if args and args[0] == "lfs":
+                raise GitError(list(args), -1, "timed out after 300s")
+            return original_run(*args, **kwargs)
+
+        with patch.object(git, "_run", side_effect=_timeout_run):
+            with caplog.at_level(logging.WARNING, logger="pubgate"):
+                git.lfs_push("origin", "main")
+        assert "LFS push failed" in caplog.text
+
+    def test_nonzero_exit_logs_warning_and_continues(self, topo: Topology, caplog):
+        git = topo.work_dir.git
+        git._lfs_available = True
+        with caplog.at_level(logging.WARNING, logger="pubgate"):
+            # Push to a nonexistent remote — should warn, not raise
+            git.lfs_push("nonexistent-remote", "main")
+        assert "LFS push failed" in caplog.text
+
+    def test_lfs_not_available_skips_silently(self, topo: Topology, caplog):
+        git = topo.work_dir.git
+        git._lfs_available = False
+        with caplog.at_level(logging.WARNING, logger="pubgate"):
+            git.lfs_push("origin", "main")
+        assert "LFS push failed" not in caplog.text

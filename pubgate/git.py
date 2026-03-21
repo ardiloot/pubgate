@@ -440,7 +440,11 @@ class GitRepo:
         if not self.is_lfs_available():
             return
         logger.info("Fetching LFS objects from %s for %s", remote, ref)
-        result = self._run("lfs", "fetch", remote, ref, check=False, timeout=_TIMEOUT_NETWORK)
+        try:
+            result = self._run("lfs", "fetch", remote, ref, check=False, timeout=_TIMEOUT_NETWORK)
+        except GitError as exc:
+            logger.warning("LFS fetch failed: %s", exc)
+            return
         if result.returncode != 0:
             logger.warning("LFS fetch failed (exit %d): %s", result.returncode, result.stderr.strip())
 
@@ -448,6 +452,10 @@ class GitRepo:
         if not self.is_lfs_available():
             return
         logger.info("Pushing LFS objects to %s for %s", remote, branch)
-        result = self._run("lfs", "push", remote, branch, check=False, timeout=_TIMEOUT_NETWORK)
+        try:
+            result = self._run("lfs", "push", remote, branch, check=False, timeout=_TIMEOUT_NETWORK)
+        except GitError as exc:
+            logger.warning("LFS push failed: %s", exc)
+            return
         if result.returncode != 0:
             logger.warning("LFS push failed (exit %d): %s", result.returncode, result.stderr.strip())

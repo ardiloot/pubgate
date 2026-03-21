@@ -150,7 +150,7 @@ pubgate supports repositories that use Git LFS. LFS support is auto-detected via
 
 **How it works:** LFS-tracked files are stored as pointer files in git. pubgate reads and writes these pointers as-is; they pass through the snapshot, stage, and publish pipelines without modification. When files are staged with `git add`, git's clean/smudge filters handle the LFS encoding automatically via `.gitattributes`.
 
-**LFS object transfer:** pubgate runs `git lfs fetch` during command startups (absorb, publish) to ensure LFS objects are locally cached, and `git lfs push` after pushing branches to transfer LFS objects to the destination remote's LFS server.
+**LFS object transfer:** pubgate runs `git lfs fetch` before file operations that need blob content (absorb, publish), skipping the fetch when there is no work to do (e.g. already up to date) or during `--dry-run`. After pushing branches, `git lfs push` transfers LFS objects to the destination remote's LFS server.
 
 **Limitations:**
 - **LFS files are treated as binary**: they are never merged during `absorb` (copied/overwritten instead) and never scrubbed for `BEGIN-INTERNAL`/`END-INTERNAL` markers during `stage`. Do not place internal markers inside LFS-tracked files; use ignore patterns in `pubgate.toml` to exclude sensitive LFS files from publication.
