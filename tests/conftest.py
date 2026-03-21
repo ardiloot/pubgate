@@ -98,7 +98,7 @@ class WorkDirectory:
             if isinstance(content, bytes):
                 full.write_bytes(content)
             else:
-                full.write_text(content, encoding="utf-8")
+                full.write_text(content, encoding="utf-8", newline="")
         _git(self.path, "add", "-A")
         _git(self.path, "commit", "-m", msg)
         return _git(self.path, "rev-parse", "HEAD").strip()
@@ -269,7 +269,7 @@ def topo(tmp_path: Path) -> Topology:
     # Seed public repo with initial commit
     _git(tmp_path, "clone", str(public_bare), str(public_work))
     _git(public_work, "checkout", "-b", "main")
-    (public_work / "public-file.txt").write_text("public content\n", encoding="utf-8")
+    (public_work / "public-file.txt").write_text("public content\n", encoding="utf-8", newline="")
     _git(public_work, "add", ".")
     _git(public_work, "commit", "-m", "initial public commit")
     _git(public_work, "push", "-u", "origin", "main")
@@ -277,7 +277,7 @@ def topo(tmp_path: Path) -> Topology:
     # Clone internal and set up developer work directory
     _git(tmp_path, "clone", str(internal_bare), str(work_dir_path))
     _git(work_dir_path, "checkout", "-b", "main")
-    (work_dir_path / "file1.txt").write_text("internal content\n", encoding="utf-8")
+    (work_dir_path / "file1.txt").write_text("internal content\n", encoding="utf-8", newline="")
     _git(work_dir_path, "add", ".")
     _git(work_dir_path, "commit", "-m", "initial internal commit")
     _git(work_dir_path, "push", "-u", "origin", "main")
@@ -313,7 +313,7 @@ def topo_empty_public(tmp_path: Path) -> Topology:
     # Clone internal and set up developer work directory
     _git(tmp_path, "clone", str(internal_bare), str(work_dir_path))
     _git(work_dir_path, "checkout", "-b", "main")
-    (work_dir_path / "file1.txt").write_text("internal content\n", encoding="utf-8")
+    (work_dir_path / "file1.txt").write_text("internal content\n", encoding="utf-8", newline="")
     _git(work_dir_path, "add", ".")
     _git(work_dir_path, "commit", "-m", "initial internal commit")
     _git(work_dir_path, "push", "-u", "origin", "main")

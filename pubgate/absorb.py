@@ -185,6 +185,11 @@ def _apply_absorb_changes(
                             theirs_tmp = Path(tmpdir) / "theirs"
                             base_tmp.write_text(published_base, encoding="utf-8", newline="")
                             theirs_tmp.write_text(theirs_content, encoding="utf-8", newline="")
+                            # Read ours from git objects instead of working copy
+                            # to avoid CRLF mismatch on Windows (see _merge_file).
+                            ours_content = _read_text_at_ref(git, "HEAD", change.path)
+                            if ours_content is not None:
+                                local_path.write_text(ours_content, encoding="utf-8", newline="")
                             clean = git.merge_file(local_path, base_tmp, theirs_tmp)
                             git.stage(change.path)
                             if clean:
@@ -280,6 +285,14 @@ def _merge_file(
         theirs_tmp = Path(tmpdir) / "theirs"
         base_tmp.write_text(base_content, encoding="utf-8", newline="")
         theirs_tmp.write_text(theirs_content, encoding="utf-8", newline="")
+
+        # Read ours from git objects instead of the working copy.
+        # On Windows, checkout may denormalize LF→CRLF, causing
+        # git merge-file to see spurious differences vs the LF
+        # base/theirs content read from git objects.
+        ours_content = _read_text_at_ref(git, "HEAD", path)
+        if ours_content is not None:
+            ours_path.write_text(ours_content, encoding="utf-8", newline="")
 
         clean = git.merge_file(ours_path, base_tmp, theirs_tmp)
         git.stage(path)
