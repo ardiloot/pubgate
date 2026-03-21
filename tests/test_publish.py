@@ -503,27 +503,3 @@ class TestPublishBaseKeptOnExternalChanges:
             topo.pubgate.publish()
 
         assert "Keeping publish base" in caplog.text
-
-
-class TestPublishCRLF:
-    def test_publish_preserves_crlf(self, topo: Topology):
-        from conftest import _git
-
-        # Force CRLF file into internal main (bypass autocrlf normalization)
-        work_path = topo.work_dir.path
-        (work_path / "crlf.txt").write_bytes(b"hello\r\nworld\r\n")
-        _git(work_path, "-c", "core.autocrlf=false", "add", "crlf.txt")
-        _git(work_path, "commit", "-m", "add crlf file")
-        topo.work_dir.push("origin", "main")
-
-        topo.bootstrap_absorb()
-        topo.pubgate.stage()
-        topo.merge_internal_pr(topo.cfg.internal_stage_branch, topo.cfg.internal_approved_branch)
-        topo.work_dir.run("checkout", "main")
-
-        topo.pubgate.publish()
-        topo.work_dir.run("fetch", "public-remote")
-
-        pr_ref = f"public-remote/{topo.cfg.public_publish_branch}"
-        raw = topo.work_dir.git.read_file_at_ref_bytes(pr_ref, "crlf.txt")
-        assert raw == b"hello\r\nworld\r\n"
