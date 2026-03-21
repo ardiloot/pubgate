@@ -134,7 +134,7 @@ The result is that divergence between the two repos is always controlled and bou
 - Temp branches force-updated, one PR per direction
 - Initial setup manual
 - Each command has a planning phase and an execution phase; `--dry-run` shows the planned actions without changing branches, files, or PRs (still runs the full per-command startup)
-- PR creation is automatic when a supported hosting provider is detected (currently GitHub via the `gh` CLI). If the remote URL is not a supported provider, or `gh` is not installed/authenticated, commands log manual PR creation steps instead. Use `--no-pr` to disable automatic PR creation. Run `gh auth login` to set up authentication
+- PR creation is automatic when a supported hosting provider is detected (GitHub via the `gh` CLI, Azure DevOps via the `az` CLI). If the remote URL is not a supported provider, or the CLI is not installed/authenticated, commands log manual PR creation steps instead. Use `--no-pr` to disable automatic PR creation. Run `gh auth login` (GitHub) or `az login` (Azure DevOps) to set up authentication
 - Each command has its own startup sequence tailored to the remotes it interacts with: `absorb` fetches both remotes and verifies `main` is synced; `stage` fetches only `origin` and verifies `main` is synced; `publish` fetches both `origin` (for `origin/pubgate/public-approved`) and `public-remote` but does not require being on `main`
 - Branch guard: before creating a PR branch, each command checks whether the branch already exists. If it does (previous PR not merged), the command errors out. Use `--force` to overwrite the existing branch and proceed. After a PR is merged and the server auto-deletes the source branch, the next startup prune removes the stale local branch automatically
 

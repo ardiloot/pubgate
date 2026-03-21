@@ -74,6 +74,7 @@ flowchart TD
 - An existing internal repo with an `origin` remote
 - An existing public repo with at least one commit (e.g. a README created during repo setup)
 - *(Optional)* [`gh` CLI](https://cli.github.com/) authenticated via `gh auth login`. Enables automatic PR creation for GitHub-hosted repos. Without it, pubgate logs the manual steps instead.
+- *(Optional)* [`az` CLI](https://learn.microsoft.com/en-us/cli/azure/) with the `azure-devops` extension, authenticated via `az login`. Enables automatic PR creation for Azure DevOps-hosted repos. The extension is installed automatically if missing. Without it, pubgate logs the manual steps instead.
 - *(Optional)* [Git LFS](https://git-lfs.com/) if your repo uses LFS-tracked files. pubgate auto-detects LFS and handles pointer files automatically. Without it, LFS-specific operations are silently skipped.
 - A clean worktree on `main`, synced with `origin` (no uncommitted changes, no unpushed commits)
 
@@ -87,7 +88,7 @@ flowchart TD
    ```toml
    public_url = "https://github.com/you/public-repo.git"
    ```
-   Built-in ignore patterns cover common conventions (`.internal/*`, `*-internal.*`, `*.internal.*`, `*.secret`, etc.). To override them, set `ignore` explicitly (see [Configuration](#configuration)).
+   Built-in ignore patterns cover common conventions (`.internal/*`, `internal/*`, `*-internal.*`, `*.internal.*`, `*_internal.*`, `*-private.*`, `*.private.*`, `*_private.*`, `*.secret`, `*.secrets`). To override them, set `ignore` explicitly (see [Configuration](#configuration)).
 3. Optionally, mark internal-only sections in files (in addition to ignore patterns, you can hide parts of individual files). Three comment styles are supported:
    ```python
    # BEGIN-INTERNAL
@@ -117,20 +118,20 @@ flowchart TD
 
 ### Making changes public: absorb → stage → publish
 
-pubgate prepares branches for review. When the `gh` CLI is available and the remote is GitHub-hosted, pubgate automatically creates or updates the PR for each branch it pushes. Otherwise it logs the manual steps. Use `--no-pr` to skip automatic PR creation. After merging changes into internal `main` through your normal PR process:
+pubgate prepares branches for review. When a supported CLI is available (`gh` for GitHub, `az` for Azure DevOps) and the remote is a recognized host, pubgate automatically creates or updates the PR for each branch it pushes. Otherwise it logs the manual steps. Use `--no-pr` to skip automatic PR creation. After merging changes into internal `main` through your normal PR process:
 
 1. Recommended: run `pubgate absorb` if the public repo has unabsorbed changes, then merge the absorb PR. This isn't required (`stage` and `publish` proceed either way) but it keeps the public snapshot clean.
 2. Run `pubgate stage`. This creates a `pubgate/stage` branch with the filtered snapshot for leak review.
-3. Review the PR from `pubgate/stage` → `pubgate/public-approved` (created automatically on GitHub, or create it manually on other hosts). This is the leak-review gate. Review it to ensure no internal code is exposed. Merge when satisfied.
+3. Review the PR from `pubgate/stage` → `pubgate/public-approved` (created automatically on GitHub/Azure DevOps, or create it manually on other hosts). This is the leak-review gate. Review it to ensure no internal code is exposed. Merge when satisfied.
 4. Run `pubgate publish`. This delivers the reviewed content to the public repo as a `pubgate/publish` branch.
-5. Review the PR from `pubgate/publish` → `main` on the public repo (created automatically on GitHub, or create it manually). Merge after CI passes.
+5. Review the PR from `pubgate/publish` → `main` on the public repo (created automatically on GitHub/Azure DevOps, or create it manually). Merge after CI passes.
 
 ### Incorporating public contributions: absorb
 
 Run when the public repo has external contributions that need to be brought into the internal repo.
 
 1. Run `pubgate absorb`. This creates a `pubgate/absorb` branch with the merged public changes for review.
-2. Review the PR from `pubgate/absorb` → `main` (created automatically on GitHub, or create it manually on other hosts).
+2. Review the PR from `pubgate/absorb` → `main` (created automatically on GitHub/Azure DevOps, or create it manually on other hosts).
 3. Resolve conflicts if any.
 4. Merge the PR.
 
@@ -170,7 +171,7 @@ Flags `--dry-run`, `--force`, and `--no-pr` apply to `absorb`, `stage`, and `pub
 |------|----------|-------------|
 | `--dry-run` | after command | Show planned actions without writing branches or files. Still syncs with remotes to ensure accurate plans. Example: `pubgate stage --dry-run` |
 | `--force` | after command | Overwrite an existing PR branch from a previous run whose PR was not yet merged. Without this flag, pubgate errors out if the PR branch already exists. Force-push is blocked on protected branches (`main`, `pubgate/public-approved`, and public `main`). Example: `pubgate absorb --force` |
-| `--no-pr` | after command | Skip automatic PR creation even when `gh` CLI is available. pubgate will still push the branch and log manual steps. Example: `pubgate stage --no-pr` |
+| `--no-pr` | after command | Skip automatic PR creation even when a supported CLI (`gh`/`az`) is available. pubgate will still push the branch and log manual steps. Example: `pubgate stage --no-pr` |
 | `--repo-dir` | before command | Run pubgate against a specific repo path instead of the current directory. Example: `pubgate --repo-dir /path/to/repo stage` |
 
 ## Configuration
@@ -252,20 +253,20 @@ git add pubgate.toml && git commit -m "Add pubgate config" && git push
 # 3. Bootstrap - records the public repo's current HEAD as baseline
 pubgate absorb
 # Output: pushes pubgate/absorb branch
-# → If gh CLI is set up, a PR is created automatically
+# → If gh/az CLI is set up, a PR is created automatically
 # → Otherwise, go to your git host, create PR: pubgate/absorb → main
 # → Merge the PR
 
 # 4. Stage staged content (filters out internal files and scrubs markers)
 pubgate stage
 # Output: pushes pubgate/stage branch
-# → PR: pubgate/stage → pubgate/public-approved (auto-created on GitHub)
+# → PR: pubgate/stage → pubgate/public-approved (auto-created on GitHub/Azure DevOps)
 # → Review for leaks, merge it
 
 # 5. Publish to public repo
 pubgate publish
 # Output: pushes pubgate/publish to the public remote
-# → PR: pubgate/publish → main on the public repo (auto-created on GitHub)
+# → PR: pubgate/publish → main on the public repo (auto-created on GitHub/Azure DevOps)
 # → Merge after CI passes
 
 # Done! For future syncs: absorb (if needed) → stage → publish.
