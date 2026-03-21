@@ -93,7 +93,7 @@ class TestIsBinaryAtRefLfs:
 class TestStageSnapshotLfs:
     def test_lfs_pointer_passes_through_without_scrub(self, topo: Topology):
         topo.commit_internal({"data.bin": SAMPLE_LFS_POINTER_STR})
-        snapshot = build_stage_snapshot(
+        snapshot, _ = build_stage_snapshot(
             topo.work_dir.git,
             "HEAD",
             ignore_patterns=[],
@@ -106,7 +106,7 @@ class TestStageSnapshotLfs:
         # Even though the pointer text is valid UTF-8, it should not be
         # passed through scrub_internal_blocks
         topo.commit_internal({"model.bin": SAMPLE_LFS_POINTER_STR})
-        snapshot = build_stage_snapshot(
+        snapshot, _ = build_stage_snapshot(
             topo.work_dir.git,
             "HEAD",
             ignore_patterns=[],
@@ -127,7 +127,7 @@ class TestGitattributesNotIgnored:
 
     def test_gitattributes_included_in_snapshot(self, topo: Topology):
         topo.commit_internal({".gitattributes": "*.bin filter=lfs diff=lfs merge=lfs -text\n"})
-        snapshot = build_stage_snapshot(
+        snapshot, _ = build_stage_snapshot(
             topo.work_dir.git,
             "HEAD",
             ignore_patterns=list(DEFAULT_IGNORE_PATTERNS),
@@ -188,7 +188,7 @@ class TestSnapshotUnchangedLfs:
         topo.work_dir.run("checkout", "main")
 
         # Build the same snapshot again (no changes)
-        snapshot = build_stage_snapshot(
+        snapshot, _ = build_stage_snapshot(
             topo.work_dir.git,
             topo.cfg.internal_main_branch,
             ignore_patterns=list(topo.cfg.ignore),

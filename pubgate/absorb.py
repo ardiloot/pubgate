@@ -67,6 +67,7 @@ def absorb_commit_message(
     last_absorbed: str,
     public_head: str,
     conflicted: list[str] | None = None,
+    needs_review: list[str] | None = None,
 ) -> str:
     subject = f"pubgate: absorb public changes {last_absorbed[:7]}..{public_head[:7]}"
     commits = git.log_oneline(last_absorbed, public_head)
@@ -80,6 +81,11 @@ def absorb_commit_message(
         lines.append("CONFLICTS (resolve before merging):")
         for path in conflicted:
             lines.append(f"  {path}")
+    if needs_review:
+        lines.append("")
+        lines.append("Review manually:")
+        for item in needs_review:
+            lines.append(f"  {item}")
     return "\n".join(lines)
 
 
@@ -93,6 +99,40 @@ def _read_text_at_ref(git: GitRepo, ref: str, path: str) -> str | None:
     if data is None:
         return None
     return data.decode("utf-8")
+
+
+def _log_review_diff(git: GitRepo, public_ref: str, path: str, local_path: Path) -> None:
+    """Log debug info comparing local vs public version of a file needing review."""
+    try:
+        public_bytes = git.read_file_at_ref_bytes(public_ref, path)
+        local_bytes = local_path.read_bytes() if local_path.exists() else None
+        pub_size = len(public_bytes) if public_bytes is not None else 0
+        loc_size = len(local_bytes) if local_bytes is not None else 0
+        same = public_bytes == local_bytes
+        logger.debug("    public: %d bytes, local: %d bytes, identical: %s", pub_size, loc_size, same)
+        if same:
+            return
+        # For text files, show a unified diff
+        if public_bytes is not None and local_bytes is not None:
+            try:
+                pub_text = public_bytes.decode("utf-8")
+                loc_text = local_bytes.decode("utf-8")
+            except UnicodeDecodeError:
+                return
+            import difflib
+
+            diff = difflib.unified_diff(
+                pub_text.splitlines(keepends=True),
+                loc_text.splitlines(keepends=True),
+                fromfile=f"public ({public_ref})",
+                tofile="local (working tree)",
+            )
+            diff_text = "".join(diff)
+            if diff_text:
+                for line in diff_text.splitlines():
+                    logger.debug("    %s", line)
+    except Exception:
+        pass  # best-effort debug logging
 
 
 def _apply_absorb_changes(
@@ -116,11 +156,20 @@ def _apply_absorb_changes(
                 kind = git.classify_at_ref(public_ref, change.path)
                 if kind != "text":
                     label = "LFS file" if kind == "lfs" else "binary"
-                    actions.append(f"  {label} added on public (kept local version, review manually): {change.path}")
+                    public_bytes = git.read_file_at_ref_bytes(public_ref, change.path)
+                    local_bytes = local_path.read_bytes()
+                    if public_bytes == local_bytes:
+                        actions.append(f"  {label} (identical): {change.path}")
+                    else:
+                        actions.append(
+                            f"  {label} added on public (kept local version, review manually): {change.path}"
+                        )
+                        _log_review_diff(git, public_ref, change.path, local_path)
                 else:
                     theirs_content = _read_text_at_ref(git, public_ref, change.path)
                     if theirs_content is None:
                         actions.append(f"  added on public (kept local version, review manually): {change.path}")
+                        _log_review_diff(git, public_ref, change.path, local_path)
                         continue
                     # Try to find the published base: the scrubbed version of
                     # the file at the internal commit that was staged.
@@ -145,6 +194,7 @@ def _apply_absorb_changes(
                     else:
                         # No staged version; file wasn't published through pubgate
                         actions.append(f"  added on public (kept local, review manually): {change.path}")
+                        _log_review_diff(git, public_ref, change.path, local_path)
             else:
                 is_binary = git.copy_file_from_ref(public_ref, change.path)
                 if is_binary:
@@ -161,6 +211,7 @@ def _apply_absorb_changes(
         elif change.is_delete:
             if (git.repo_dir / change.path).exists():
                 actions.append(f"  deleted on public (kept locally, review manually): {change.path}")
+                logger.debug("    local file exists at %s", git.repo_dir / change.path)
 
         elif change.is_rename:
             old_path = change.old_path or ""
@@ -192,6 +243,7 @@ def _merge_file(
         git.write_file_and_stage_bytes(path, theirs_bytes)
         label = "LFS file" if is_lfs_pointer(theirs_bytes) else "binary"
         actions.append(f"  {label} changed on public (replaced locally, review manually): {path}")
+        _log_review_diff(git, public_ref, path, git.repo_dir / path)
         return
 
     # Use the scrubbed staged content as merge base when available.
