@@ -152,7 +152,7 @@ class PubGate:
             )
             return
 
-        git.lfs_fetch(cfg.public_remote, cfg.public_main_branch)
+        git.lfs_fetch(cfg.public_remote, public_head)
 
         def _absorb_work() -> bool:
             actions = resolve_and_apply(cfg, git, last_absorbed, public_head)
@@ -391,7 +391,7 @@ class PubGate:
             )
             return
 
-        git.lfs_fetch("origin", cfg.internal_approved_branch)
+        git.lfs_fetch("origin", origin_preview_ref)
 
         def _publish_work() -> bool:
             existing = git.ls_tree("HEAD")
