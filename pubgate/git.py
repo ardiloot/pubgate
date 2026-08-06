@@ -345,6 +345,20 @@ class GitRepo:
         first_line = result.stdout.strip().split("\n", 1)[0]
         return first_line if first_line else None
 
+    def find_commit_adding(self, head: str, path: str) -> str | None:
+        result = self._run(
+            "log",
+            "--first-parent",
+            "--reverse",
+            "--diff-filter=A",
+            "--format=%H",
+            head,
+            "--",
+            path,
+        )
+        first_line = result.stdout.strip().split("\n", 1)[0]
+        return first_line if first_line else None
+
     def changed_files_in_commit(self, sha: str) -> list[str]:
         result = self._run("diff-tree", "--no-commit-id", "-r", "--name-only", f"{sha}~1", sha)
         return [f for f in result.stdout.strip().splitlines() if f]

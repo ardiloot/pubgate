@@ -229,19 +229,29 @@ class PubGate:
                 logger.info("No changes to stage (%s is already up to date)", cfg.internal_approved_branch)
                 return
 
-        prev_ref = StateRef.read(git, origin_preview_ref, cfg.stage_state_file)
-        if prev_ref is not None:
+        previous_stage = StateRef.read(git, origin_preview_ref, cfg.stage_state_file)
+        previous_stage_sha = previous_stage.sha if previous_stage is not None else None
+        if previous_stage_sha is None:
+            previous_stage_sha = git.find_commit_adding(cfg.internal_main_branch, cfg.absorb_state_file)
+
+        internal_commits = []
+        if previous_stage_sha is not None:
+            if not git.is_ancestor(previous_stage_sha, main_head):
+                raise PubGateError(
+                    f"Error: previous staged source {previous_stage_sha[:7]} is not an ancestor of "
+                    f"{cfg.internal_main_branch} {main_head[:7]}. Reconcile the source branch history first."
+                )
             try:
-                internal_commits = git.log_oneline(prev_ref.sha, main_head)
-            except PubGateError:
-                internal_commits = []
+                internal_commits = git.log_oneline(previous_stage_sha, main_head)
+            except (GitError, PubGateError) as exc:
+                logger.warning("Could not list staged commits: %s", exc)
             n = len(internal_commits)
             if n:
                 logger.info(
                     "Staging %d %s: %s..%s",
                     n,
                     "commit" if n == 1 else "commits",
-                    prev_ref.sha[:7],
+                    previous_stage_sha[:7],
                     main_head[:7],
                 )
                 _log_commits(internal_commits)
@@ -249,6 +259,8 @@ class PubGate:
                 logger.info("Staging changes into %s", cfg.internal_approved_branch)
         else:
             logger.info("Staging changes into %s", cfg.internal_approved_branch)
+
+        full_msg = stage_commit_message(cfg, main_head, previous_stage_sha, internal_commits)
 
         if lfs_count:
             logger.info("Snapshot includes %d LFS-tracked %s", lfs_count, "file" if lfs_count == 1 else "files")
@@ -278,9 +290,8 @@ class PubGate:
                 logger.info("No changes to stage (%s is already up to date)", cfg.internal_approved_branch)
                 return False
 
-            msg = stage_commit_message(git, cfg, main_head, origin_preview_ref)
-            sha = git.commit(msg)
-            logger.info("Committed on %s (%s %s)", cfg.internal_stage_branch, sha[:7], msg.split("\n", 1)[0])
+            sha = git.commit(full_msg)
+            logger.info("Committed on %s (%s %s)", cfg.internal_stage_branch, sha[:7], full_msg.split("\n", 1)[0])
             return True
 
         committed = self._run_on_pr_branch(
@@ -292,7 +303,6 @@ class PubGate:
         )
         if committed:
             self._push_to_remote(cfg.internal_stage_branch, "origin", cfg.internal_stage_branch, force=force)
-            full_msg = stage_commit_message(git, cfg, main_head, origin_preview_ref)
             title, body = _split_message(full_msg)
             self._handle_pr(
                 remote="origin",

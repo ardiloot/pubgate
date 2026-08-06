@@ -4,8 +4,7 @@ from .config import Config
 from .errors import PubGateError
 from .filtering import check_conflict_markers, check_residual_markers, is_ignored, scrub_internal_blocks
 from .git import GitRepo, is_lfs_pointer
-from .models import format_commit
-from .state import StateRef
+from .models import CommitInfo, format_commit
 
 logger = logging.getLogger(__name__)
 
@@ -95,37 +94,32 @@ def snapshot_unchanged_ref(
         logger.debug("No previous snapshot to compare against")
         return "(empty)" if not snapshot else None
 
-    prev_files = set(git.ls_tree(compare_ref)) - cfg.state_files
+    previous_blobs = git.ls_tree_blob_ids(compare_ref)
+    prev_files = set(previous_blobs) - cfg.state_files
     new_files = set(snapshot.keys()) - cfg.state_files
     if prev_files != new_files:
         return None
 
-    for path in new_files:
+    paths = sorted(new_files)
+    previous_contents = git.read_blobs_auto([previous_blobs[path] for path in paths])
+    for path, old_content in zip(paths, previous_contents, strict=True):
         new_content = snapshot[path]
-        old_content = git.read_file_auto(compare_ref, path)
         if old_content != new_content:
             return None
     return compare_ref
 
 
 def stage_commit_message(
-    git: GitRepo,
     cfg: Config,
     main_head: str,
-    origin_preview_ref: str,
+    previous_stage_sha: str | None,
+    commits: list[CommitInfo],
 ) -> str:
-    subject = f"pubgate: stage from main {main_head[:7]}"
-    try:
-        prev_ref = StateRef.read(git, origin_preview_ref, cfg.stage_state_file)
-    except PubGateError:
-        return subject
-    if prev_ref is None:
-        return subject
-    commits = git.log_oneline(prev_ref.sha, main_head)
-    if not commits:
+    subject = f"pubgate: stage from {cfg.internal_main_branch} {main_head[:7]}"
+    if previous_stage_sha is None or not commits:
         return subject
     lines = [subject, ""]
-    lines.append(f"Included commits ({prev_ref.sha[:7]}..{main_head[:7]}):")
+    lines.append(f"Included commits ({previous_stage_sha[:7]}..{main_head[:7]}):")
     lines.extend(f"  {i}. {format_commit(c)}" for i, c in enumerate(commits, 1))
     return "\n".join(lines)
 

@@ -230,10 +230,41 @@ class TestStageBranchGuard:
         topo.bootstrap_absorb()
         topo.pubgate.stage()
 
-        topo.commit_internal({"new.txt": "new\n"})
+        tracking_base = topo.work_dir.git.find_commit_adding("main", topo.cfg.absorb_state_file)
+        assert tracking_base is not None
+        topo.commit_internal({"new.txt": "new\n"}, "add staged feature")
+        current_source = topo.work_dir.git.rev_parse("main")
         topo.pubgate.stage(force=True)
         files = topo.work_dir.list_files_at_ref(topo.cfg.internal_stage_branch)
         assert "new.txt" in files
+        message = topo.work_dir.run("log", "-1", "--format=%B", topo.cfg.internal_stage_branch)
+        assert f"Included commits ({tracking_base[:7]}..{current_source[:7]}):" in message
+        assert "add staged feature" in message
+
+    def test_next_stage_uses_approved_source_baseline(self, topo: Topology):
+        topo.stage_and_merge()
+        approved_source = topo.work_dir.git.rev_parse("main")
+        current_source = topo.commit_internal({"next.txt": "next\n"}, "next staged feature")
+
+        topo.pubgate.stage()
+
+        message = topo.work_dir.run("log", "-1", "--format=%B", topo.cfg.internal_stage_branch)
+        assert f"Included commits ({approved_source[:7]}..{current_source[:7]}):" in message
+        assert "next staged feature" in message
+
+    def test_rejects_source_unrelated_to_approved_source(self, topo: Topology):
+        from unittest.mock import patch
+
+        from pubgate.git import GitRepo
+
+        topo.stage_and_merge()
+        topo.commit_internal({"next.txt": "next\n"}, "next staged feature")
+
+        with (
+            patch.object(GitRepo, "is_ancestor", return_value=False),
+            pytest.raises(PubGateError, match="previous staged source.*is not an ancestor"),
+        ):
+            topo.pubgate.stage()
 
 
 class TestStageSkipsStateOnly:
@@ -293,7 +324,7 @@ class TestStageLogOnelineException:
     def test_stage_succeeds_when_log_oneline_fails(self, topo: Topology, caplog):
         from unittest.mock import patch
 
-        from pubgate.errors import PubGateError
+        from pubgate.errors import GitError
         from pubgate.git import GitRepo
 
         topo.stage_and_merge()
@@ -303,26 +334,17 @@ class TestStageLogOnelineException:
         topo.absorb_and_merge()
         topo.commit_internal({"v2.txt": "version 2\n"})
 
-        call_count = 0
-        original_log = GitRepo.log_oneline
-
         def failing_first_log(self_inner, base, head):
-            nonlocal call_count
-            call_count += 1
-            # Fail only on the first call (the pre-commit logging in stage()),
-            # let subsequent calls (e.g., commit message generation) succeed.
-            if call_count == 1:
-                raise PubGateError("simulated log failure")
-            return original_log(self_inner, base, head)
+            raise GitError(["log"], 1, "simulated log failure")
 
         with patch.object(GitRepo, "log_oneline", failing_first_log):
-            with caplog.at_level(logging.INFO, logger="pubgate"):
+            with caplog.at_level(logging.WARNING, logger="pubgate"):
                 topo.pubgate.stage(force=True)
 
         # Stage should still succeed
         files = topo.work_dir.list_files_at_ref(topo.cfg.internal_stage_branch)
         assert "v2.txt" in files
-        assert call_count >= 1
+        assert "Could not list staged commits" in caplog.text
 
 
 class TestSnapshotUnreadableFile:
