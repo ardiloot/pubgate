@@ -242,8 +242,8 @@ class GitRepo:
         env = {"GIT_LFS_SKIP_SMUDGE": "1"} if skip_lfs_smudge else None
         self._run("reset", "--hard", ref, env=env)
 
-    def clean_all(self) -> None:
-        self._run("clean", "-ffdx")
+    def clean_untracked(self) -> None:
+        self._run("clean", "-ffd")
 
     # ------------------------------------------------------------------
     # Checkout operations

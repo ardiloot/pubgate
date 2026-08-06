@@ -339,7 +339,8 @@ class PubGate:
 
         git.fetch("origin")
         approved_ref = f"origin/{cfg.internal_approved_branch}"
-        if git.remote_branch_exists("origin", cfg.internal_approved_branch):
+        approved_exists = git.remote_branch_exists("origin", cfg.internal_approved_branch)
+        if approved_exists:
             approved_base = git.rev_parse(approved_ref)
         else:
             approved_base = git.create_empty_root_commit("pubgate: initialize local preview base")
@@ -360,11 +361,12 @@ class PubGate:
                 preview_git = GitRepo(output_path)
             else:
                 preview_git = GitRepo(output_path)
+                preview_git.clean_untracked()
                 preview_git.reset_hard(approved_base, skip_lfs_smudge=True)
-                preview_git.clean_all()
 
             apply_stage_snapshot(preview_git, snapshot, cfg.stage_state_file)
             preview_git.write_file_and_stage(cfg.stage_state_file, source_head + "\n")
+            preview_git.clean_untracked()
             preview_git.lfs_checkout()
 
             unexpected = [
@@ -382,11 +384,15 @@ class PubGate:
                     logger.warning("Failed to remove incomplete preview worktree '%s': %s", output_path, cleanup_exc)
             raise
 
-        logger.info("Preview ready at %s", output_path)
-        logger.info("Source: %s", source_head[:7])
-        logger.info("Approved base: %s", approved_base[:7])
+        logger.info("Preview %s at %s", "updated" if existing is not None else "ready", output_path)
+        logger.info("  Filtered commit: %s", source_head[:7])
+        if approved_exists:
+            logger.info("  Comparison base: %s (%s)", approved_ref, approved_base[:7])
+        else:
+            logger.info("  Comparison base: empty (%s does not exist)", approved_ref)
         if lfs_count:
-            logger.info("Preview includes %d LFS-tracked %s", lfs_count, "file" if lfs_count == 1 else "files")
+            logger.info("  LFS-tracked files: %d", lfs_count)
+        logger.info("  Changes are staged; run tests from the preview worktree.")
 
     def publish(self, *, dry_run: bool = False, force: bool = False, no_pr: bool = False) -> None:
         cfg, git = self.cfg, self.git

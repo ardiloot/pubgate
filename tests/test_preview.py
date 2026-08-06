@@ -1,3 +1,4 @@
+import logging
 from unittest.mock import patch
 
 import pytest
@@ -28,7 +29,7 @@ class TestPreviewWorktreeLifecycle:
 
             preview_git = GitRepo(output)
             (output / "artifact.txt").write_text("artifact\n", encoding="utf-8")
-            preview_git.clean_all()
+            preview_git.clean_untracked()
             preview_git.reset_hard(base, skip_lfs_smudge=True)
             assert not (output / "artifact.txt").exists()
         finally:
@@ -39,7 +40,7 @@ class TestPreviewWorktreeLifecycle:
 
 
 class TestPreviewWorkflow:
-    def test_previews_clean_unpushed_feature_commit(self, topo: Topology):
+    def test_previews_clean_unpushed_feature_commit(self, topo: Topology, caplog):
         topo.bootstrap_absorb()
         topo.work_dir.run("checkout", "-b", "feature")
         source_head = topo.work_dir.commit_files(
@@ -52,7 +53,8 @@ class TestPreviewWorkflow:
         source_status = topo.work_dir.run("status", "--porcelain")
         output = topo.tmp_dir / "preview"
 
-        topo.pubgate.preview(output=output)
+        with caplog.at_level(logging.INFO, logger="pubgate"):
+            topo.pubgate.preview(output=output)
 
         preview_git = GitRepo(output)
         assert preview_git.current_branch() == "HEAD"
@@ -64,6 +66,10 @@ class TestPreviewWorkflow:
         assert topo.work_dir.git.rev_parse("HEAD") == source_head
         assert topo.work_dir.run("rev-parse", "--abbrev-ref", "HEAD").strip() == "feature"
         assert topo.work_dir.run("status", "--porcelain") == source_status
+        assert f"Preview ready at {output}" in caplog.text
+        assert f"Filtered commit: {source_head[:7]}" in caplog.text
+        assert f"Comparison base: empty (origin/{topo.cfg.internal_approved_branch} does not exist)" in caplog.text
+        assert "Changes are staged; run tests from the preview worktree." in caplog.text
 
         source_git = topo.work_dir.git
         source_git.remove_locked_worktree(output)
@@ -111,7 +117,7 @@ class TestPreviewWorkflow:
         assert (output / topo.cfg.stage_state_file).read_text(encoding="utf-8").strip() == source_head
         topo.work_dir.git.remove_locked_worktree(output)
 
-    def test_force_reuses_worktree_and_removes_test_artifacts(self, topo: Topology):
+    def test_force_reuses_worktree_and_preserves_ignored_build_artifacts(self, topo: Topology):
         topo.stage_and_merge()
         topo.work_dir.run("checkout", "-b", "feature")
         topo.work_dir.commit_files(
@@ -140,7 +146,7 @@ class TestPreviewWorkflow:
         assert GitRepo(output)._run("rev-parse", "--git-dir").stdout.strip() == git_dir_before
         assert (output / "feature.txt").read_text(encoding="utf-8") == "version 2\n"
         assert not (output / "untracked.txt").exists()
-        assert not (output / "build").exists()
+        assert (output / "build" / "ignored.txt").read_text(encoding="utf-8") == "artifact\n"
         assert not nested.exists()
         topo.work_dir.git.remove_locked_worktree(output)
 

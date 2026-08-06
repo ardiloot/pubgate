@@ -106,7 +106,7 @@ Each command runs its own startup sequence before command-specific logic. `--dry
 3. Apply the snapshot with the same delete/write/stage helper as production `stage`, then set `.pubgate-staged` to local source `HEAD`
 4. Leave the candidate staged and uncommitted for `git diff --cached` comparison and manual testing
 5. Run local-only `git lfs checkout`; available objects become working files and unavailable objects remain pointers
-6. With `--force`, reuse the locked preview by resetting it to the latest approved base and running `git clean -ffdx` before applying the new snapshot
+6. With `--force`, reuse the locked preview by cleaning non-ignored artifacts before reset, applying the new snapshot, then cleaning again under its ignore rules; build artifacts are preserved while they remain ignored
 
 Preview shortcuts only the internal local-development path through prospective `public-approved` content. It does not
 merge the source into main, open or satisfy the stage review gate, contact the public remote, or participate in

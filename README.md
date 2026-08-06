@@ -187,7 +187,7 @@ The PR commands (`absorb`, `stage`, and `publish`) accept `--dry-run`, `--force`
 |------|----------|-------------|
 | `--output` | after `preview` | Required path for the linked preview worktree; it must be outside the source worktree. Example: `pubgate preview --output ../project-public-preview` |
 | `--dry-run` | after command | Show planned actions without writing branches or files. Still syncs with remotes to ensure accurate plans. Example: `pubgate stage --dry-run` |
-| `--force` | after command | For PR commands, overwrite an existing PR branch. For `preview`, reset the output to the latest approved baseline and delete all previous test/build artifacts. Example: `pubgate preview --output ../project-public-preview --force` |
+| `--force` | after command | For PR commands, overwrite an existing PR branch. For `preview`, reset the output to the latest approved baseline, removing non-ignored untracked files while preserving ignored build artifacts. Example: `pubgate preview --output ../project-public-preview --force` |
 | `--no-pr` | after command | Skip automatic PR creation even when a supported CLI (`gh`/`az`) is available. pubgate will still push the branch and log manual steps. Example: `pubgate stage --no-pr` |
 | `--repo-dir` | before command | Run pubgate against a specific repo path instead of the current directory. Example: `pubgate --repo-dir /path/to/repo stage` |
 
