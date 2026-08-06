@@ -25,6 +25,7 @@ pubgate sidesteps this: staging is always a snapshot (current state, mechanicall
 ## Commands
 
 - `absorb` = bring public repo changes into internal `main` via internal PR
+- `preview` = optionally generate a local-only filtered linked worktree from a committed local `HEAD` for testing
 - `stage` = generate public stage candidate and open an internal PR into `pubgate/public-approved`
 - `publish` = push reviewed internal `pubgate/public-approved` content to a branch on the public repo and open or update a PR to public `main`
 
@@ -49,7 +50,7 @@ These states are independent and should not share meaning implicitly by branch.
 
 ## Per-command startup
 
-Each command runs its own startup sequence before command-specific logic. `--dry-run` still runs the full startup. Stage and publish read `origin/pubgate/public-approved` (the remote tracking ref, not the local branch) to guarantee freshness after an stage PR is merged on the server.
+Each command runs its own startup sequence before command-specific logic. `--dry-run` still runs the full startup for PR commands. Preview, stage, and publish read `origin/pubgate/public-approved` (the remote tracking ref, not the local branch) to guarantee freshness after a stage PR is merged on the server.
 
 ### `absorb` startup
 
@@ -65,6 +66,14 @@ Each command runs its own startup sequence before command-specific logic. `--dry
 | `UP_TO_DATE` | exit |
 | `NEEDS_ABSORB` | proceed |
 | `NEEDS_BOOTSTRAP` | bootstrap |
+
+### `preview` startup
+
+1. Ensure the source worktree is clean and `HEAD` resolves to a commit
+2. Allow any branch or detached `HEAD`, including unpushed commits; do not require or update internal `main`
+3. Error when repository sparse checkout is active
+4. Fetch internal `origin` with `--prune` to read current `origin/pubgate/public-approved`; do not configure or fetch the public remote
+5. Require the output outside the source worktree; refuse an existing path unless `--force` identifies it as this repository's locked `pubgate-preview-v1` worktree
 
 ### `stage` startup
 
@@ -89,6 +98,19 @@ Each command runs its own startup sequence before command-specific logic. `--dry
 4. Create or update `pubgate/absorb` from `main`
 5. Compute the inbound result, applying the per-file merge/copy/delete rules as needed, and update `.pubgate-absorbed`; deleted public files are left in place and reported for manual review in the PR; when only state files changed since last absorb, the resulting PR only updates `.pubgate-absorbed` (tracking-only)
 6. Commit the result and open or update the internal PR into `main`; the commit message lists the public commits being absorbed (safe, they are already public); internal CI must pass before merge
+
+## `preview` (local commit -> local filtered worktree) -- local only
+
+1. Run preview startup and build the stage snapshot directly from exact local `HEAD`, using the same filtering function as `stage`
+2. Base a detached, locked linked worktree on fetched `origin/pubgate/public-approved`; when the approved branch does not exist, use a local unreachable empty root commit
+3. Apply the snapshot with the same delete/write/stage helper as production `stage`, then set `.pubgate-staged` to local source `HEAD`
+4. Leave the candidate staged and uncommitted for `git diff --cached` comparison and manual testing
+5. Run local-only `git lfs checkout`; available objects become working files and unavailable objects remain pointers
+6. With `--force`, reuse the locked preview by resetting it to the latest approved base and running `git clean -ffdx` before applying the new snapshot
+
+Preview shortcuts only the internal local-development path through prospective `public-approved` content. It does not
+merge the source into main, open or satisfy the stage review gate, contact the public remote, or participate in
+`publish`. Its `.pubgate-staged` value is truthful inside the shared local repository but does not confer approval.
 
 ## `stage` (internal -> internal `pubgate/public-approved` review) -- semi-automated
 
@@ -124,6 +146,7 @@ The result is that divergence between the two repos is always controlled and bou
   - internal PR into `pubgate/public-approved` to catch leaks before any public push
   - public PR into `main` to run public CI before merge
 - `absorb` only modifies internal `main`
+- `preview` creates no branch or PR and never modifies `pubgate/public-approved`; its detached worktree is a local test artifact
 - `stage` is the only command that modifies internal `pubgate/public-approved`
 - `publish` only modifies public-repo-side branches/PRs
 - `main` and public `main` stay protected by their destination CI gates
@@ -133,10 +156,10 @@ The result is that divergence between the two repos is always controlled and bou
 - Protected branches are never written directly
 - Temp branches force-updated, one PR per direction
 - Initial setup manual
-- Each command has a planning phase and an execution phase; `--dry-run` shows the planned actions without changing branches, files, or PRs (still runs the full per-command startup)
+- Each PR command has a planning phase and an execution phase; `--dry-run` shows the planned actions without changing branches, files, or PRs (still runs the full per-command startup)
 - PR creation is automatic when a supported hosting provider is detected (GitHub via the `gh` CLI, Azure DevOps via the `az` CLI). If the remote URL is not a supported provider, or the CLI is not installed/authenticated, commands log manual PR creation steps instead. Use `--no-pr` to disable automatic PR creation. Run `gh auth login` (GitHub) or `az login` (Azure DevOps) to set up authentication
-- Each command has its own startup sequence tailored to the remotes it interacts with: `absorb` fetches both remotes and verifies `main` is synced; `stage` fetches only `origin` and verifies `main` is synced; `publish` fetches both `origin` (for `origin/pubgate/public-approved`) and `public-remote` but does not require being on `main`
-- Branch guard: before creating a PR branch, each command checks whether the branch already exists. If it does (previous PR not merged), the command errors out. Use `--force` to overwrite the existing branch and proceed. After a PR is merged and the server auto-deletes the source branch, the next startup prune removes the stale local branch automatically
+- Each command has its own startup sequence tailored to the remotes it interacts with: `preview` fetches only `origin` without requiring synced `main`; `absorb` fetches both remotes and verifies `main` is synced; `stage` fetches only `origin` and verifies `main` is synced; `publish` fetches both `origin` (for `origin/pubgate/public-approved`) and `public-remote` but does not require being on `main`
+- Branch guard: before creating a PR branch, each PR command checks whether the branch already exists. If it does (previous PR not merged), the command errors out. Use `--force` to overwrite the existing branch and proceed. After a PR is merged and the server auto-deletes the source branch, the next startup prune removes the stale local branch automatically
 
 ## Known limitations
 

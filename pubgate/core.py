@@ -1,5 +1,6 @@
 import logging
 from collections.abc import Callable
+from pathlib import Path
 
 from .absorb import AbsorbResult, absorb_commit_message, check_absorb, resolve_and_apply
 from .config import CONFIG_FILE, Config
@@ -8,10 +9,18 @@ from .git import GitRepo
 from .models import CommitInfo, format_commit
 from .pr import detect_provider
 from .publish import publish_commit_message, resolve_publish_base
-from .stage_snapshot import build_stage_snapshot, ensure_public_branch, snapshot_unchanged_ref, stage_commit_message
+from .stage_snapshot import (
+    apply_stage_snapshot,
+    build_stage_snapshot,
+    ensure_public_branch,
+    snapshot_unchanged_ref,
+    stage_commit_message,
+)
 from .state import AbsorbStatus, StateRef
 
 logger = logging.getLogger(__name__)
+
+_PREVIEW_LOCK_REASON = "pubgate-preview-v1"
 
 
 def _log_commits(commits: list[CommitInfo], *, limit: int = 10) -> None:
@@ -202,7 +211,10 @@ class PubGate:
 
         ignore_patterns = list(cfg.ignore)
         snapshot, lfs_count = build_stage_snapshot(
-            git, cfg.internal_main_branch, ignore_patterns, frozenset({CONFIG_FILE})
+            git,
+            cfg.internal_main_branch,
+            ignore_patterns,
+            frozenset({CONFIG_FILE, cfg.stage_state_file}),
         )
 
         unchanged_ref = snapshot_unchanged_ref(cfg, git, snapshot)
@@ -260,14 +272,7 @@ class PubGate:
         ensure_public_branch(cfg, git)
 
         def _stage_work() -> bool:
-            existing = git.ls_tree("HEAD")
-            for path in existing:
-                if path not in snapshot and path != cfg.stage_state_file:
-                    git.remove_file_and_stage(path)
-
-            for path, content in sorted(snapshot.items()):
-                git.write_file_and_stage_auto(path, content)
-
+            apply_stage_snapshot(git, snapshot, cfg.stage_state_file)
             git.write_file_and_stage(cfg.stage_state_file, main_head + "\n")
 
             if not git.has_staged_changes():
@@ -300,6 +305,88 @@ class PubGate:
                 extra_steps=["Run 'pubgate publish' (if ready)"],
                 no_pr=no_pr,
             )
+
+    def preview(self, *, output: str | Path, force: bool = False) -> None:
+        cfg, git = self.cfg, self.git
+        source_root = git.repo_dir.resolve()
+        output_path = Path(output).expanduser().resolve()
+
+        if (
+            output_path == source_root
+            or output_path.is_relative_to(source_root)
+            or source_root.is_relative_to(output_path)
+        ):
+            raise PubGateError("Error: preview output must be outside the source working tree.")
+
+        git.ensure_clean_worktree()
+        try:
+            source_head = git.rev_parse("HEAD")
+        except GitError as exc:
+            raise PubGateError("Error: preview requires at least one commit.") from exc
+        if git.is_sparse_checkout_enabled():
+            raise PubGateError("Error: preview does not support sparse checkouts.")
+
+        existing = git.find_worktree(output_path)
+        if output_path.exists() or existing is not None:
+            if not force:
+                raise PubGateError(f"Error: preview output '{output_path}' already exists. Use --force to replace it.")
+            if existing is None or existing.lock_reason != _PREVIEW_LOCK_REASON:
+                raise PubGateError(f"Error: refusing to replace '{output_path}'; it is not a pubgate preview worktree.")
+            if not output_path.exists():
+                raise PubGateError(
+                    f"Error: preview worktree '{output_path}' is missing. Remove its Git worktree entry first."
+                )
+
+        git.fetch("origin")
+        approved_ref = f"origin/{cfg.internal_approved_branch}"
+        if git.remote_branch_exists("origin", cfg.internal_approved_branch):
+            approved_base = git.rev_parse(approved_ref)
+        else:
+            approved_base = git.create_empty_root_commit("pubgate: initialize local preview base")
+
+        # Validate a present absorb state without requiring bootstrap.
+        StateRef.read(git, "HEAD", cfg.absorb_state_file)
+        snapshot, lfs_count = build_stage_snapshot(
+            git,
+            "HEAD",
+            list(cfg.ignore),
+            frozenset({CONFIG_FILE, cfg.stage_state_file}),
+        )
+
+        preview_git: GitRepo
+        try:
+            if existing is None:
+                git.add_locked_worktree(output_path, approved_base, _PREVIEW_LOCK_REASON)
+                preview_git = GitRepo(output_path)
+            else:
+                preview_git = GitRepo(output_path)
+                preview_git.reset_hard(approved_base, skip_lfs_smudge=True)
+                preview_git.clean_all()
+
+            apply_stage_snapshot(preview_git, snapshot, cfg.stage_state_file)
+            preview_git.write_file_and_stage(cfg.stage_state_file, source_head + "\n")
+            preview_git.lfs_checkout()
+
+            unexpected = [
+                line
+                for line in preview_git.status_porcelain()
+                if line.startswith("??") or len(line) < 2 or line[1] != " "
+            ]
+            if unexpected:
+                raise PubGateError("Error: preview generation left unexpected working-tree changes.")
+        except BaseException:
+            if git.find_worktree(output_path) is not None:
+                try:
+                    git.remove_locked_worktree(output_path)
+                except Exception as cleanup_exc:
+                    logger.warning("Failed to remove incomplete preview worktree '%s': %s", output_path, cleanup_exc)
+            raise
+
+        logger.info("Preview ready at %s", output_path)
+        logger.info("Source: %s", source_head[:7])
+        logger.info("Approved base: %s", approved_base[:7])
+        if lfs_count:
+            logger.info("Preview includes %d LFS-tracked %s", lfs_count, "file" if lfs_count == 1 else "files")
 
     def publish(self, *, dry_run: bool = False, force: bool = False, no_pr: bool = False) -> None:
         cfg, git = self.cfg, self.git

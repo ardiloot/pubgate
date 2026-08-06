@@ -17,9 +17,10 @@ You have an internal repo with proprietary code and you want to open-source part
 
 pubgate prepares branches for review. You create and merge PRs on your git host (GitHub, GitLab, etc.). It handles both directions:
 
-- Stage changes behind an internal leak-review PR gate
-- Push reviewed content to a PR branch on the public repo
 - Absorb public contributions back into internal main with three-way merge
+- Optionally preview a filtered local commit before merging or pushing it
+- Stage changes behind an internal leak-review PR gate
+- Publish reviewed content through a PR on the public repo
 
 Filtering is mechanical: built-in ignore patterns exclude common internal/private/secret file naming conventions out of the box, `BEGIN-INTERNAL` / `END-INTERNAL` markers strip sections from individual files, and `pubgate.toml` is always excluded automatically. Custom `ignore` patterns in the config replace the defaults.
 
@@ -76,7 +77,7 @@ flowchart TD
 - *(Optional)* [`gh` CLI](https://cli.github.com/) authenticated via `gh auth login`. Enables automatic PR creation for GitHub-hosted repos. Without it, pubgate logs the manual steps instead.
 - *(Optional)* [`az` CLI](https://learn.microsoft.com/en-us/cli/azure/) with the `azure-devops` extension, authenticated via `az login`. Enables automatic PR creation for Azure DevOps-hosted repos. The extension is installed automatically if missing. Without it, pubgate logs the manual steps instead.
 - *(Optional)* [Git LFS](https://git-lfs.com/) if your repo uses LFS-tracked files. pubgate auto-detects LFS and handles pointer files automatically. Without it, LFS-specific operations are silently skipped.
-- A clean worktree on `main`, synced with `origin` (no uncommitted changes, no unpushed commits)
+- `absorb`, `preview`, `stage`, and `publish` require a clean worktree. `absorb` and `stage` additionally require `main` synced with `origin`; `preview` accepts any local commit, including unpushed commits.
 
 ### Setup
 
@@ -115,6 +116,19 @@ flowchart TD
 6. After your first `pubgate stage` run creates the `pubgate/public-approved` branch, protect it on your git host: require pull requests (no direct pushes) and optionally require approvals. This ensures content only reaches the approved branch through reviewed PRs — the leak-review gate.
 
 ## Workflow
+
+### Optional local preflight: preview
+
+Normally, testing filtered output requires merging to internal `main`, running `stage`, merging its PR, and checking out
+`pubgate/public-approved`. For easier local testing, commit locally and run `preview`:
+
+```bash
+pubgate preview --output ../project-public-preview
+```
+
+Preview requires a clean worktree but accepts any local commit, including unpushed commits. It filters exact local `HEAD`
+into a separate worktree based on the latest approved content. Browse and test there. Preview never contacts the public
+repo or replaces stage review; when ready, merge the source commit into `main` and run `pubgate stage`.
 
 ### Making changes public: absorb → stage → publish
 
@@ -160,17 +174,20 @@ Created and updated automatically.
 
 | Command | What it does |
 |---------|-------------|
+| `pubgate absorb` | Merge public contributions into an internal branch for review |
+| `pubgate preview` | Optionally generate a local-only filtered worktree from a clean local commit for testing |
 | `pubgate stage` | Build a filtered snapshot of internal code and create a branch for leak review |
 | `pubgate publish` | Push reviewed content to a PR branch on the public repo |
-| `pubgate absorb` | Merge public contributions into an internal branch for review |
 | `pubgate status` | Show sync status of absorb, stage, and publish (read-only, fetches remotes) |
 
-Flags `--dry-run`, `--force`, and `--no-pr` apply to `absorb`, `stage`, and `publish` (not `status`). Flags come after the command; `--repo-dir` comes before it.
+The PR commands (`absorb`, `stage`, and `publish`) accept `--dry-run`, `--force`, and `--no-pr`. `preview` accepts
+`--output` and `--force`; `status` has no flags. Command flags come after the command, while `--repo-dir` comes before it.
 
 | Flag | Position | Description |
 |------|----------|-------------|
+| `--output` | after `preview` | Required path for the linked preview worktree; it must be outside the source worktree. Example: `pubgate preview --output ../project-public-preview` |
 | `--dry-run` | after command | Show planned actions without writing branches or files. Still syncs with remotes to ensure accurate plans. Example: `pubgate stage --dry-run` |
-| `--force` | after command | Overwrite an existing PR branch from a previous run whose PR was not yet merged. Without this flag, pubgate errors out if the PR branch already exists. Force-push is blocked on protected branches (`main`, `pubgate/public-approved`, and public `main`). Example: `pubgate absorb --force` |
+| `--force` | after command | For PR commands, overwrite an existing PR branch. For `preview`, reset the output to the latest approved baseline and delete all previous test/build artifacts. Example: `pubgate preview --output ../project-public-preview --force` |
 | `--no-pr` | after command | Skip automatic PR creation even when a supported CLI (`gh`/`az`) is available. pubgate will still push the branch and log manual steps. Example: `pubgate stage --no-pr` |
 | `--repo-dir` | before command | Run pubgate against a specific repo path instead of the current directory. Example: `pubgate --repo-dir /path/to/repo stage` |
 
@@ -209,6 +226,8 @@ ignore = [
 
 ## Edge Cases
 
+- **Preview and Git LFS**: preview runs local-only `git lfs checkout` after staging. Locally available objects are materialized for testing while the index retains canonical pointers. Missing objects remain pointer files; preview never downloads them.
+- **Preview Git state**: preview records exact local source `HEAD` in `.pubgate-staged`, including an unpushed SHA. This identifies the local test snapshot but does not confer approval; never use the preview worktree as a publishing source. Because the candidate remains staged, Git-version tools report the approved baseline rather than the source commit.
 - **Binary files**: included as-is in staged snapshots (`BEGIN-INTERNAL` markers inside binaries are not processed); during absorb, binary modifications take the public version and are flagged for manual review.
 - **Git LFS files**: LFS pointers pass through all pipelines without modification. LFS files are treated as binary (never merged, never scrubbed for internal markers). pubgate runs `git lfs fetch`/`push` automatically during absorb and publish. Use ignore patterns in `pubgate.toml` to exclude sensitive LFS files from publication. If LFS is not installed, these operations are silently skipped.
 - **Renames on public repo**: the new path is copied in; the old file is kept locally and flagged for review.
@@ -227,6 +246,8 @@ ignore = [
 | Error | Cause | Fix |
 |-------|-------|-----|
 | "working tree is not clean" | Dirty worktree | Commit or stash your changes |
+| "preview output '<path>' already exists" | A preview already exists at that path | Re-run with `--force` to reset the pubgate-owned preview |
+| "preview does not support sparse checkouts" | Sparse checkout is enabled in the source repository | Disable sparse checkout before generating the preview |
 | "expected branch 'main', currently on '...'" | Not on the main branch | Run `git checkout main` |
 | "HEAD is detached" | Detached HEAD state | Run `git checkout main` |
 | "unpushed commit(s)" | Local `main` is ahead of origin | Push your commits or reset |

@@ -1,7 +1,9 @@
 import logging
+import os
 import subprocess
-from collections.abc import Iterator
+from collections.abc import Iterator, Mapping
 from contextlib import contextmanager
+from dataclasses import dataclass
 from pathlib import Path
 
 from .errors import GitError, PubGateError
@@ -15,6 +17,12 @@ _TIMEOUT_NETWORK = 300
 
 _LFS_POINTER_PREFIX = b"version https://git-lfs.github.com/spec/v1\n"
 _LFS_POINTER_MAX_LEN = 512
+
+
+@dataclass(frozen=True, slots=True)
+class WorktreeInfo:
+    path: Path
+    lock_reason: str | None
 
 
 def is_lfs_pointer(data: str | bytes) -> bool:
@@ -41,11 +49,21 @@ class GitRepo:
         *args: str,
         check: bool = True,
         timeout: int = _TIMEOUT_LOCAL,
+        env: Mapping[str, str] | None = None,
+        input_text: str | None = None,
     ) -> subprocess.CompletedProcess[str]:
         cmd = ["git", "-C", str(self.repo_dir), *args]
         logger.debug("git %s", " ".join(args))
+        process_env = None if env is None else {**os.environ, **env}
         try:
-            result = subprocess.run(cmd, capture_output=True, text=True, timeout=timeout)  # noqa: S603
+            result = subprocess.run(  # noqa: S603
+                cmd,
+                capture_output=True,
+                text=True,
+                timeout=timeout,
+                env=process_env,
+                input=input_text,
+            )
         except subprocess.TimeoutExpired as exc:
             raise GitError(list(args), -1, f"timed out after {timeout}s") from exc
         logger.debug("git exit=%d", result.returncode)
@@ -169,6 +187,65 @@ class GitRepo:
         return result.returncode == 0
 
     # ------------------------------------------------------------------
+    # Linked worktrees
+    # ------------------------------------------------------------------
+
+    def list_worktrees(self) -> list[WorktreeInfo]:
+        result = self._run_bytes("worktree", "list", "--porcelain", "-z")
+        worktrees: list[WorktreeInfo] = []
+        record: dict[str, str] = {}
+
+        for field_bytes in result.stdout.split(b"\x00"):
+            if not field_bytes:
+                if "worktree" in record:
+                    worktrees.append(
+                        WorktreeInfo(
+                            path=Path(record["worktree"]),
+                            lock_reason=record.get("locked"),
+                        )
+                    )
+                record = {}
+                continue
+
+            field = field_bytes.decode("utf-8", errors="surrogateescape")
+            key, separator, value = field.partition(" ")
+            record[key] = value if separator else ""
+
+        return worktrees
+
+    def find_worktree(self, path: Path) -> WorktreeInfo | None:
+        target = path.resolve()
+        for worktree in self.list_worktrees():
+            if worktree.path.resolve() == target:
+                return worktree
+        return None
+
+    def add_locked_worktree(self, path: Path, start_point: str, lock_reason: str) -> None:
+        path.parent.mkdir(parents=True, exist_ok=True)
+        self._run(
+            "worktree",
+            "add",
+            "--detach",
+            "--lock",
+            "--reason",
+            lock_reason,
+            str(path),
+            start_point,
+            env={"GIT_LFS_SKIP_SMUDGE": "1"},
+        )
+
+    def remove_locked_worktree(self, path: Path) -> None:
+        self._run("worktree", "unlock", str(path))
+        self._run("worktree", "remove", "--force", str(path))
+
+    def reset_hard(self, ref: str, *, skip_lfs_smudge: bool = False) -> None:
+        env = {"GIT_LFS_SKIP_SMUDGE": "1"} if skip_lfs_smudge else None
+        self._run("reset", "--hard", ref, env=env)
+
+    def clean_all(self) -> None:
+        self._run("clean", "-ffdx")
+
+    # ------------------------------------------------------------------
     # Checkout operations
     # ------------------------------------------------------------------
 
@@ -214,6 +291,14 @@ class GitRepo:
         result = self._run("status", "--porcelain")
         if result.stdout.strip():
             raise PubGateError("Error: working tree is not clean. Commit or stash changes first.")
+
+    def status_porcelain(self) -> list[str]:
+        result = self._run("status", "--porcelain")
+        return result.stdout.splitlines()
+
+    def is_sparse_checkout_enabled(self) -> bool:
+        result = self._run("config", "--bool", "--get", "core.sparseCheckout", check=False)
+        return result.returncode == 0 and result.stdout.strip() == "true"
 
     # ------------------------------------------------------------------
     # Ref & commit history
@@ -410,6 +495,16 @@ class GitRepo:
         self._run("commit", "--allow-empty", "--no-verify", "-m", message)
         return self.rev_parse("HEAD")
 
+    def create_empty_root_commit(self, message: str) -> str:
+        tree = self._run("mktree", input_text="").stdout.strip()
+        identity = {
+            "GIT_AUTHOR_NAME": "pubgate",
+            "GIT_AUTHOR_EMAIL": "pubgate@local",
+            "GIT_COMMITTER_NAME": "pubgate",
+            "GIT_COMMITTER_EMAIL": "pubgate@local",
+        }
+        return self._run("commit-tree", tree, "-m", message, env=identity).stdout.strip()
+
     # ------------------------------------------------------------------
     # Merging
     # ------------------------------------------------------------------
@@ -459,3 +554,10 @@ class GitRepo:
             return
         if result.returncode != 0:
             logger.warning("LFS push failed (exit %d): %s", result.returncode, result.stderr.strip())
+
+    def lfs_checkout(self) -> None:
+        if not self.is_lfs_available():
+            return
+        result = self._run("lfs", "checkout", check=False, timeout=_TIMEOUT_NETWORK)
+        if result.returncode != 0:
+            logger.warning("LFS checkout failed (exit %d): %s", result.returncode, result.stderr.strip())

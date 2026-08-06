@@ -3,6 +3,7 @@ import re
 import sys
 from dataclasses import dataclass, field, fields
 from pathlib import Path
+from typing import Any, cast
 
 if sys.version_info >= (3, 11):
     import tomllib
@@ -154,4 +155,4 @@ def load_config(repo_dir: str | Path = ".") -> Config:
                 raise PubGateError(f"{CONFIG_FILE}: '{key}' must be a list of strings")
         kwargs[key] = val
 
-    return Config(**kwargs)  # type: ignore[arg-type]
+    return Config(**cast(Any, kwargs))

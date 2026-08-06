@@ -1,12 +1,14 @@
 import logging
 import subprocess
 from pathlib import Path
+from unittest.mock import patch
 
 import pytest
 from conftest import Topology
 
 from pubgate.__main__ import build_parser, main
 from pubgate.config import Config, load_config
+from pubgate.core import PubGate
 from pubgate.errors import GitError, PubGateError
 from pubgate.git import GitRepo
 from pubgate.state import validate_state_sha
@@ -17,7 +19,10 @@ class TestCLI:
         with pytest.raises(SystemExit) as exc:
             main(["--help"])
         assert exc.value.code == 0
-        assert "pubgate" in capsys.readouterr().out
+        output = capsys.readouterr().out
+        assert "pubgate" in output
+        assert "{absorb,preview,stage,publish,status}" in output
+        assert "optional local-only stage preview" in output
 
     def test_no_command_exits_nonzero(self):
         with pytest.raises(SystemExit) as exc:
@@ -174,6 +179,30 @@ class TestRepoDirFlag:
     def test_repo_dir_default(self):
         args = build_parser().parse_args(["absorb"])
         assert args.repo_dir == "."
+
+    def test_preview_flags(self):
+        args = build_parser().parse_args(["preview", "--output", "../preview", "--force"])
+        assert args.command == "preview"
+        assert args.output == "../preview"
+        assert args.force is True
+
+    def test_preview_requires_output(self):
+        with pytest.raises(SystemExit):
+            build_parser().parse_args(["preview"])
+
+    def test_preview_skips_public_remote_setup(self, tmp_path: Path):
+        (tmp_path / "pubgate.toml").write_text('public_url = "https://example.com/public.git"\n', encoding="utf-8")
+        output = tmp_path.parent / "preview"
+
+        with (
+            patch.object(GitRepo, "verify_repo"),
+            patch.object(GitRepo, "ensure_remote") as ensure_remote,
+            patch.object(PubGate, "preview") as preview,
+        ):
+            main(["--repo-dir", str(tmp_path), "preview", "--output", str(output)])
+
+        ensure_remote.assert_not_called()
+        preview.assert_called_once_with(output=str(output), force=False)
 
 
 class TestConfigFieldMetadata:

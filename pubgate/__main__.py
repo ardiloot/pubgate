@@ -13,6 +13,7 @@ logger = logging.getLogger(__name__)
 
 class Command(enum.Enum):
     ABSORB = "absorb"
+    PREVIEW = "preview"
     STAGE = "stage"
     PUBLISH = "publish"
     STATUS = "status"
@@ -37,8 +38,17 @@ def build_parser() -> argparse.ArgumentParser:
     parser.add_argument("--repo-dir", default=".", help="Path to the internal repo (default: .)")
 
     sub = parser.add_subparsers(dest="command")
+    absorb = sub.add_parser(Command.ABSORB.value, help="Bring public repo changes into internal main via PR")
+    _add_common_flags(absorb)
+
+    preview = sub.add_parser(
+        Command.PREVIEW.value,
+        help="Generate an optional local-only stage preview worktree for testing",
+    )
+    preview.add_argument("--output", required=True, help="Path for the linked preview worktree")
+    preview.add_argument("--force", action="store_true", help="Reset and reuse an existing pubgate preview worktree")
+
     for cmd, help_text in (
-        (Command.ABSORB.value, "Bring public repo changes into internal main via PR"),
         (Command.STAGE.value, "Generate stage candidate and open internal PR into pubgate/public-approved"),
         (Command.PUBLISH.value, "Push reviewed pubgate/public-approved content to the public repo and open PR"),
     ):
@@ -74,11 +84,14 @@ def main(argv: list[str] | None = None) -> None:
     try:
         git = GitRepo(Path(args.repo_dir))
         git.verify_repo()
-        git.ensure_remote(cfg.public_remote, cfg.public_url)
+        if cmd != Command.PREVIEW:
+            git.ensure_remote(cfg.public_remote, cfg.public_url)
         pg = PubGate(cfg, git)
 
         if cmd == Command.STATUS:
             pg.status()
+        elif cmd == Command.PREVIEW:
+            pg.preview(output=args.output, force=args.force)
         else:
             flags = dict(dry_run=args.dry_run, force=args.force, no_pr=args.no_pr)
             match cmd:

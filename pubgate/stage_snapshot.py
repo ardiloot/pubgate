@@ -53,6 +53,20 @@ def build_stage_snapshot(
     return snapshot, len(lfs_files)
 
 
+def apply_stage_snapshot(
+    git: GitRepo,
+    snapshot: dict[str, str | bytes],
+    stage_state_file: str,
+) -> None:
+    existing = git.ls_tree("HEAD")
+    for path in existing:
+        if path not in snapshot and path != stage_state_file:
+            git.remove_file_and_stage(path)
+
+    for path, content in sorted(snapshot.items()):
+        git.write_file_and_stage_auto(path, content)
+
+
 def snapshot_unchanged_ref(
     cfg: Config,
     git: GitRepo,
