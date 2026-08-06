@@ -8,7 +8,7 @@ from .errors import GitError, PubGateError
 from .git import GitRepo
 from .models import CommitInfo, format_commit
 from .pr import detect_provider
-from .publish import publish_commit_message, resolve_publish_base
+from .publish import normalize_publish_metadata, resolve_publish_base
 from .stage_snapshot import (
     apply_stage_snapshot,
     build_stage_snapshot,
@@ -163,7 +163,10 @@ class PubGate:
 
         git.lfs_fetch(cfg.public_remote, public_head)
 
+        commit_message: str | None = None
+
         def _absorb_work() -> bool:
+            nonlocal commit_message
             actions = resolve_and_apply(cfg, git, last_absorbed, public_head)
             if actions:
                 logger.info("Changes (base %s):", last_absorbed[:7])
@@ -175,9 +178,14 @@ class PubGate:
             git.write_file_and_stage(cfg.absorb_state_file, public_head + "\n")
             conflicted = [a.split(": ", 1)[1] for a in actions if "CONFLICTS" in a]
             needs_review = [a.strip() for a in actions if "review manually" in a]
-            msg = absorb_commit_message(git, last_absorbed, public_head, conflicted, needs_review)
-            sha = git.commit(msg)
-            logger.info("Committed on %s (%s %s)", cfg.internal_absorb_branch, sha[:7], msg.split("\n", 1)[0])
+            commit_message = absorb_commit_message(git, last_absorbed, public_head, conflicted, needs_review)
+            sha = git.commit(commit_message)
+            logger.info(
+                "Committed on %s (%s %s)",
+                cfg.internal_absorb_branch,
+                sha[:7],
+                commit_message.split("\n", 1)[0],
+            )
             return True
 
         self._run_on_pr_branch(
@@ -189,8 +197,8 @@ class PubGate:
         )
         self._push_to_remote(cfg.internal_absorb_branch, "origin", cfg.internal_absorb_branch, force=force)
         self.git.lfs_push("origin", cfg.internal_absorb_branch)
-        full_msg = absorb_commit_message(git, last_absorbed, public_head)
-        title, body = _split_message(full_msg)
+        assert commit_message is not None
+        title, body = _split_message(commit_message)
         self._handle_pr(
             remote="origin",
             head=cfg.internal_absorb_branch,
@@ -207,7 +215,7 @@ class PubGate:
         self._stage_startup()
 
         main_head = git.rev_parse(cfg.internal_main_branch)
-        origin_preview_ref = f"origin/{cfg.internal_approved_branch}"
+        approved_ref = f"origin/{cfg.internal_approved_branch}"
 
         ignore_patterns = list(cfg.ignore)
         snapshot, lfs_count = build_stage_snapshot(
@@ -229,7 +237,7 @@ class PubGate:
                 logger.info("No changes to stage (%s is already up to date)", cfg.internal_approved_branch)
                 return
 
-        previous_stage = StateRef.read(git, origin_preview_ref, cfg.stage_state_file)
+        previous_stage = StateRef.read(git, approved_ref, cfg.stage_state_file)
         previous_stage_sha = previous_stage.sha if previous_stage is not None else None
         if previous_stage_sha is None:
             previous_stage_sha = git.find_commit_adding(cfg.internal_main_branch, cfg.absorb_state_file)
@@ -260,7 +268,7 @@ class PubGate:
         else:
             logger.info("Staging changes into %s", cfg.internal_approved_branch)
 
-        full_msg = stage_commit_message(cfg, main_head, previous_stage_sha, internal_commits)
+        full_msg = stage_commit_message(main_head, previous_stage_sha, internal_commits)
 
         if lfs_count:
             logger.info("Snapshot includes %d LFS-tracked %s", lfs_count, "file" if lfs_count == 1 else "files")
@@ -296,7 +304,7 @@ class PubGate:
 
         committed = self._run_on_pr_branch(
             branch=cfg.internal_stage_branch,
-            base=origin_preview_ref,
+            base=approved_ref,
             label="stage",
             force=force,
             work_fn=_stage_work,
@@ -407,32 +415,40 @@ class PubGate:
             logger.info("  LFS-tracked files: %d", lfs_count)
         logger.info("  Changes are staged; run tests from the preview worktree.")
 
-    def publish(self, *, dry_run: bool = False, force: bool = False, no_pr: bool = False) -> None:
+    def publish(
+        self,
+        *,
+        message: str,
+        author_name: str,
+        author_email: str,
+        dry_run: bool = False,
+        force: bool = False,
+        no_pr: bool = False,
+    ) -> None:
         cfg, git = self.cfg, self.git
         public_main = cfg.public_main_ref
+        message, author_name, author_email = normalize_publish_metadata(message, author_name, author_email)
 
         self._publish_startup()
 
-        origin_preview_ref = f"origin/{cfg.internal_approved_branch}"
+        approved_ref = f"origin/{cfg.internal_approved_branch}"
 
         # Guard: internal PR into public must have been merged
-        stage_ref = StateRef.read(git, origin_preview_ref, cfg.stage_state_file)
+        stage_ref = StateRef.read(git, approved_ref, cfg.stage_state_file)
         if stage_ref is None:
             raise PubGateError(
                 f"Error: no stage state found on {cfg.internal_approved_branch}. "
                 "Run 'stage' and merge the internal PR first."
             )
-        main_sha = stage_ref.sha
-
         # Already delivered?
         remote_stage_ref = StateRef.read(git, public_main, cfg.stage_state_file)
         if remote_stage_ref is not None:
-            if remote_stage_ref.sha == main_sha:
+            if remote_stage_ref.sha == stage_ref.sha:
                 logger.info("Already published (public repo is up to date)")
                 return
 
         # Read absorbed baseline from origin/{internal_approved_branch}
-        absorb_ref = StateRef.read(git, origin_preview_ref, cfg.absorb_state_file)
+        absorb_ref = StateRef.read(git, approved_ref, cfg.absorb_state_file)
         if absorb_ref is None:
             raise PubGateError(
                 f"Error: no absorb state found on {cfg.internal_approved_branch}. Run 'absorb' and 'stage' first."
@@ -446,7 +462,7 @@ class PubGate:
             )
 
         # Build commit on top of content from origin/{internal_approved_branch}
-        public_files = git.ls_tree(origin_preview_ref)
+        public_files = git.ls_tree(approved_ref)
 
         # Determine publish base and log range
         public_head = git.rev_parse(public_main)
@@ -455,13 +471,13 @@ class PubGate:
             git,
             absorbed_sha,
             public_head,
-            origin_preview_ref,
+            approved_ref,
             remote_sha=remote_stage_ref.sha if remote_stage_ref is not None else None,
         )
 
         # Log commits being published from origin/{internal_approved_branch}
-        preview_commits = git.log_oneline(publish_log_base, origin_preview_ref)
-        n = len(preview_commits)
+        approved_commits = git.log_oneline(publish_log_base, approved_ref)
+        n = len(approved_commits)
         if n:
             logger.info(
                 "Publishing %d %s from %s (base %s):",
@@ -470,9 +486,11 @@ class PubGate:
                 cfg.internal_approved_branch,
                 publish_base[:7],
             )
-            _log_commits(preview_commits)
+            _log_commits(approved_commits)
         else:
             logger.info("Publishing to %s (no changes, base %s)", cfg.public_remote, publish_base[:7])
+
+        title, body = _split_message(message)
 
         self._guard_branch_not_exists(cfg.public_publish_branch, force=force)
 
@@ -488,8 +506,8 @@ class PubGate:
                 remote=cfg.public_remote,
                 head=cfg.public_publish_branch,
                 base=cfg.public_main_branch,
-                title="",
-                body="",
+                title=title,
+                body=body,
                 host_label="the public repo",
                 extra_steps=["Run 'pubgate absorb' to sync tracking"],
                 no_pr=no_pr,
@@ -497,7 +515,7 @@ class PubGate:
             )
             return
 
-        git.lfs_fetch("origin", origin_preview_ref)
+        git.lfs_fetch("origin", approved_ref)
 
         def _publish_work() -> bool:
             existing = git.ls_tree("HEAD")
@@ -505,15 +523,14 @@ class PubGate:
                 git.remove_file_and_stage(path)
 
             for path in sorted(public_files):
-                git.copy_file_from_ref(origin_preview_ref, path)
+                git.copy_file_from_ref(approved_ref, path)
 
             if not git.has_staged_changes():
                 logger.info("No changes to publish (public repo already has this content)")
                 return False
 
-            msg = publish_commit_message(main_sha, preview_commits, publish_log_base, origin_preview_ref)
-            sha = git.commit(msg)
-            logger.info("Committed on %s (%s %s)", cfg.public_publish_branch, sha[:7], msg.split("\n", 1)[0])
+            sha = git.commit_with_identity(message, author_name, author_email)
+            logger.info("Committed on %s (%s %s)", cfg.public_publish_branch, sha[:7], title)
             return True
 
         def _publish_push() -> None:
@@ -529,8 +546,6 @@ class PubGate:
             after_fn=_publish_push,
         )
         if committed:
-            full_msg = publish_commit_message(main_sha, preview_commits, publish_log_base, origin_preview_ref)
-            title, body = _split_message(full_msg)
             self._handle_pr(
                 remote=cfg.public_remote,
                 head=cfg.public_publish_branch,

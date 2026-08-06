@@ -104,7 +104,7 @@ class TestStageGuards:
         topo.merge_internal_pr(topo.cfg.internal_stage_branch, topo.cfg.internal_approved_branch)
 
         # Publish delivers the restaged content
-        topo.pubgate.publish()
+        topo.publish()
 
         topo.work_dir.run("fetch", "public-remote")
         pr_ref = f"public-remote/{topo.cfg.public_publish_branch}"
@@ -227,6 +227,10 @@ class TestStageBranchGuard:
             topo.pubgate.stage()
 
     def test_force_overwrites_existing_branch(self, topo: Topology):
+        from unittest.mock import patch
+
+        from pubgate.core import PubGate
+
         topo.bootstrap_absorb()
         topo.pubgate.stage()
 
@@ -234,12 +238,16 @@ class TestStageBranchGuard:
         assert tracking_base is not None
         topo.commit_internal({"new.txt": "new\n"}, "add staged feature")
         current_source = topo.work_dir.git.rev_parse("main")
-        topo.pubgate.stage(force=True)
+        with patch.object(PubGate, "_handle_pr") as handle_pr:
+            topo.pubgate.stage(force=True)
         files = topo.work_dir.list_files_at_ref(topo.cfg.internal_stage_branch)
         assert "new.txt" in files
         message = topo.work_dir.run("log", "-1", "--format=%B", topo.cfg.internal_stage_branch)
+        assert message.startswith(f"pubgate: filtered snapshot at {current_source[:7]}\n")
         assert f"Included commits ({tracking_base[:7]}..{current_source[:7]}):" in message
         assert "add staged feature" in message
+        assert handle_pr.call_args.kwargs["title"] == message.split("\n", 1)[0]
+        assert handle_pr.call_args.kwargs["body"] == message.split("\n", 1)[1].strip()
 
     def test_next_stage_uses_approved_source_baseline(self, topo: Topology):
         topo.stage_and_merge()

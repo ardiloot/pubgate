@@ -149,7 +149,7 @@ class TestStatusPRPending:
 
     def test_publish_pr_pending(self, topo: Topology, caplog):
         topo.stage_and_merge()
-        topo.pubgate.publish()
+        topo.publish()
         # Don't merge the public PR - branch still on remote
 
         with caplog.at_level(logging.DEBUG, logger="pubgate"):

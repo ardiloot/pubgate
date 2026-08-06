@@ -1,15 +1,46 @@
 import logging
+from unittest.mock import patch
 
 import pytest
 from conftest import SAMPLE_PNG, Topology
 
 from pubgate.errors import PubGateError
+from pubgate.publish import normalize_publish_metadata
+
+
+class TestPublishMessage:
+    def test_normalizes_public_metadata(self):
+        message, name, email = normalize_publish_metadata(
+            "Release codec 1.0\n\nRelease notes\n\n"
+            "Co-authored-by: Alice Public <alice@example.com>\n"
+            "Co-authored-by: Bob Public <bob@example.com>",
+            " Release Bot ",
+            " release@example.com ",
+        )
+
+        assert message.startswith("Release codec 1.0\n")
+        assert name == "Release Bot"
+        assert email == "release@example.com"
+
+    @pytest.mark.parametrize(
+        ("message", "name", "email"),
+        [
+            ("", "Release Bot", "release@example.com"),
+            ("Release", "", "release@example.com"),
+            ("Release", "Internal\nUser", "release@example.com"),
+            ("Release", "Release Bot", "  "),
+            ("Release", "Release Bot", "not-an-email"),
+        ],
+    )
+    def test_rejects_invalid_public_metadata(self, message: str, name: str, email: str):
+        with pytest.raises(PubGateError):
+            normalize_publish_metadata(message, name, email)
 
 
 class TestPublishBasic:
     def test_publishes_correct_snapshot(self, topo: Topology):
         topo.stage_and_merge()
-        topo.pubgate.publish()
+        topo.publish()
 
         topo.work_dir.run("fetch", "public-remote")
         pr_ref = f"public-remote/{topo.cfg.public_publish_branch}"
@@ -27,6 +58,38 @@ class TestPublishBasic:
         assert state is not None
         assert state.strip() == topo.work_dir.git.rev_parse("main")
 
+    def test_custom_message_with_public_co_authors(self, topo: Topology):
+        from pubgate.core import PubGate
+
+        topo.stage_and_merge()
+        topo.work_dir.run("config", "commit.gpgSign", "true")
+        pg = topo.pubgate
+        with patch.object(PubGate, "_handle_pr") as handle_pr:
+            pg.publish(
+                message=(
+                    "Release codec 1.0\n\n"
+                    "Co-authored-by: Alice Public <alice@example.com>\n"
+                    "Co-authored-by: Bob Public <bob@example.com>"
+                ),
+                author_name="Release Bot",
+                author_email="release@example.com",
+            )
+
+        message = topo.work_dir.run("log", "-1", "--format=%B", topo.cfg.public_publish_branch)
+        assert message.startswith("Release codec 1.0\n")
+        assert "Co-authored-by: Alice Public <alice@example.com>" in message
+        assert "Co-authored-by: Bob Public <bob@example.com>" in message
+        identity = topo.work_dir.run(
+            "log",
+            "-1",
+            "--format=%an%n%ae%n%cn%n%ce",
+            topo.cfg.public_publish_branch,
+        ).splitlines()
+        assert identity == ["Release Bot", "release@example.com", "Release Bot", "release@example.com"]
+        assert topo.work_dir.run("log", "-1", "--format=%G?", topo.cfg.public_publish_branch).strip() == "N"
+        assert handle_pr.call_args.kwargs["title"] == "Release codec 1.0"
+        assert handle_pr.call_args.kwargs["body"] == message.split("\n", 1)[1].strip()
+
 
 class TestPublishGuards:
     def test_guard_no_stage_state(self, topo: Topology):
@@ -34,7 +97,7 @@ class TestPublishGuards:
         topo.pubgate.absorb()
         topo.merge_internal_pr(topo.cfg.internal_absorb_branch, "main")
         with pytest.raises(PubGateError, match="stage"):
-            topo.pubgate.publish()
+            topo.publish()
 
     def test_guard_internal_pr_not_merged(self, topo: Topology):
         topo.pubgate.absorb()
@@ -42,7 +105,7 @@ class TestPublishGuards:
         topo.pubgate.stage()
         # Don't merge the stage PR - public branch has no stage state
         with pytest.raises(PubGateError, match="stage"):
-            topo.pubgate.publish()
+            topo.publish()
 
     def test_already_published(self, topo: Topology, caplog):
         topo.stage_and_merge()
@@ -50,7 +113,7 @@ class TestPublishGuards:
 
         # Now publish again should be a no-op
         with caplog.at_level(logging.INFO, logger="pubgate"):
-            topo.pubgate.publish()
+            topo.publish()
         assert "Already published" in caplog.text
 
 
@@ -58,7 +121,7 @@ class TestPublishDryRun:
     def test_dry_run_previews_without_pushing(self, topo: Topology, caplog):
         topo.stage_and_merge()
         with caplog.at_level(logging.INFO, logger="pubgate"):
-            topo.pubgate.publish(dry_run=True)
+            topo.publish(dry_run=True)
         assert "[dry-run] Would commit on" in caplog.text
         assert "[dry-run] Would push" in caplog.text
         assert "Next steps" in caplog.text
@@ -273,7 +336,7 @@ class TestPublishBinary:
         topo.commit_internal({"asset.png": SAMPLE_PNG})
 
         topo.stage_and_merge()
-        topo.pubgate.publish()
+        topo.publish()
 
         topo.work_dir.run("fetch", "public-remote")
         published = topo.work_dir.git.read_file_at_ref_bytes(
@@ -285,14 +348,14 @@ class TestPublishBinary:
 class TestPublishRepublish:
     def test_republish_force_pushes_over_existing_branch(self, topo: Topology):
         topo.stage_and_merge()
-        topo.pubgate.publish()
+        topo.publish()
         # Don't merge the public PR - branch still exists on public
 
         # Make a new internal change, stage, merge, and publish again
         topo.commit_internal({"v2.txt": "version 2\n"}, push=True)
         topo.pubgate.stage(force=True)
         topo.merge_internal_pr(topo.cfg.internal_stage_branch, topo.cfg.internal_approved_branch)
-        topo.pubgate.publish(force=True)
+        topo.publish(force=True)
 
         # Verify new content is on public sync branch
         topo.work_dir.run("fetch", "public-remote")
@@ -314,7 +377,7 @@ class TestPublishWithExternals:
         topo.merge_internal_pr(topo.cfg.internal_absorb_branch, "main")
 
         # Publish should succeed: staged snapshot is based on absorbed commit
-        topo.pubgate.publish()
+        topo.publish()
 
         topo.work_dir.run("fetch", "public-remote")
         pr_ref = f"public-remote/{topo.cfg.public_publish_branch}"
@@ -336,7 +399,7 @@ class TestPublishWithExternals:
         topo.merge_internal_pr(topo.cfg.internal_stage_branch, topo.cfg.internal_approved_branch)
 
         # Publish succeeds
-        topo.pubgate.publish()
+        topo.publish()
 
         # Verify public PR contains both internal and external content
         topo.work_dir.run("fetch", "public-remote")
@@ -362,7 +425,7 @@ class TestPublishStageAbsorbPublish:
         topo.merge_internal_pr(topo.cfg.internal_absorb_branch, "main")
 
         # Publish the already-staged content
-        topo.pubgate.publish()
+        topo.publish()
 
         topo.work_dir.run("fetch", "public-remote")
         pr_ref = f"public-remote/{topo.cfg.public_publish_branch}"
@@ -378,7 +441,7 @@ class TestPublishFromNonMain:
 
         # Switch to a different branch before publishing
         topo.work_dir.run("checkout", "-b", "feature-branch")
-        topo.pubgate.publish()
+        topo.publish()
 
         topo.work_dir.run("fetch", "public-remote")
         pr_ref = f"public-remote/{topo.cfg.public_publish_branch}"
@@ -389,23 +452,23 @@ class TestPublishFromNonMain:
 class TestPublishBranchGuard:
     def test_errors_when_pr_branch_exists(self, topo: Topology):
         topo.stage_and_merge()
-        topo.pubgate.publish()
+        topo.publish()
 
         # Make a new change cycle and try to publish again - should refuse
         topo.commit_internal({"v2.txt": "v2\n"}, push=True)
         topo.pubgate.stage(force=True)
         topo.merge_internal_pr(topo.cfg.internal_stage_branch, topo.cfg.internal_approved_branch)
         with pytest.raises(PubGateError, match="--force"):
-            topo.pubgate.publish()
+            topo.publish()
 
     def test_force_overwrites_existing_branch(self, topo: Topology):
         topo.stage_and_merge()
-        topo.pubgate.publish()
+        topo.publish()
 
         topo.commit_internal({"v2.txt": "v2\n"}, push=True)
         topo.pubgate.stage(force=True)
         topo.merge_internal_pr(topo.cfg.internal_stage_branch, topo.cfg.internal_approved_branch)
-        topo.pubgate.publish(force=True)
+        topo.publish(force=True)
 
         topo.work_dir.run("fetch", "public-remote")
         pr_ref = f"public-remote/{topo.cfg.public_publish_branch}"
@@ -424,7 +487,7 @@ class TestPublishAncestryValidation:
         topo.external_contributor.run("push", "--force", "origin", "main")
 
         with pytest.raises(PubGateError, match="not an ancestor"):
-            topo.pubgate.publish()
+            topo.publish()
 
 
 class TestPublishBaseAdvancement:
@@ -441,7 +504,7 @@ class TestPublishBaseAdvancement:
         topo.work_dir.run("checkout", "main")
 
         with caplog.at_level(logging.DEBUG, logger="pubgate"):
-            topo.pubgate.publish()
+            topo.publish()
 
         # Should succeed without errors
         topo.work_dir.run("fetch", "public-remote")
@@ -453,7 +516,7 @@ class TestPublishBaseAdvancement:
 class TestPublishForcePushProtection:
     def test_force_push_to_protected_branch_rejected(self, topo: Topology):
         topo.stage_and_merge()
-        topo.pubgate.publish()
+        topo.publish()
 
         # Try to force-push to internal main (should fail)
         with pytest.raises(PubGateError, match="refusing to force-push"):
@@ -478,7 +541,7 @@ class TestPublishNoChanges:
 
         # Re-publishing without new stage should detect it's already published
         with caplog.at_level(logging.INFO, logger="pubgate"):
-            topo.pubgate.publish()
+            topo.publish()
 
         assert "Already published" in caplog.text
 
@@ -500,6 +563,6 @@ class TestPublishBaseKeptOnExternalChanges:
         topo.work_dir.run("checkout", "main")
 
         with caplog.at_level(logging.DEBUG, logger="pubgate"):
-            topo.pubgate.publish()
+            topo.publish()
 
         assert "Keeping publish base" in caplog.text

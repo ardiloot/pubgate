@@ -190,6 +190,27 @@ class TestRepoDirFlag:
         with pytest.raises(SystemExit):
             build_parser().parse_args(["preview"])
 
+    def test_publish_metadata_flags(self):
+        message = "Release codec 1.0\n\nCo-authored-by: Alice Public <alice@example.com>"
+        args = build_parser().parse_args(
+            [
+                "publish",
+                "--message",
+                message,
+                "--author-name",
+                "Release Bot",
+                "--author-email",
+                "release@example.com",
+            ]
+        )
+        assert args.message == message
+        assert args.author_name == "Release Bot"
+        assert args.author_email == "release@example.com"
+
+    def test_publish_requires_public_metadata(self):
+        with pytest.raises(SystemExit):
+            build_parser().parse_args(["publish"])
+
     def test_preview_skips_public_remote_setup(self, tmp_path: Path):
         (tmp_path / "pubgate.toml").write_text('public_url = "https://example.com/public.git"\n', encoding="utf-8")
         output = tmp_path.parent / "preview"
@@ -203,6 +224,37 @@ class TestRepoDirFlag:
 
         ensure_remote.assert_not_called()
         preview.assert_called_once_with(output=str(output), force=False)
+
+    def test_publish_routes_metadata(self, tmp_path: Path):
+        (tmp_path / "pubgate.toml").write_text('public_url = "https://example.com/public.git"\n', encoding="utf-8")
+
+        with (
+            patch.object(GitRepo, "verify_repo"),
+            patch.object(GitRepo, "ensure_remote"),
+            patch.object(PubGate, "publish") as publish,
+        ):
+            main(
+                [
+                    "--repo-dir",
+                    str(tmp_path),
+                    "publish",
+                    "--message",
+                    "Release codec 1.0\n\nCo-authored-by: Alice Public <alice@example.com>",
+                    "--author-name",
+                    "Release Bot",
+                    "--author-email",
+                    "release@example.com",
+                ]
+            )
+
+        publish.assert_called_once_with(
+            dry_run=False,
+            force=False,
+            no_pr=False,
+            message="Release codec 1.0\n\nCo-authored-by: Alice Public <alice@example.com>",
+            author_name="Release Bot",
+            author_email="release@example.com",
+        )
 
 
 class TestConfigFieldMetadata:

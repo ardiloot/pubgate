@@ -582,6 +582,16 @@ class GitRepo:
         self._run("commit", "--no-verify", "-m", message)
         return self.rev_parse("HEAD")
 
+    def commit_with_identity(self, message: str, name: str, email: str) -> str:
+        identity = {
+            "GIT_AUTHOR_NAME": name,
+            "GIT_AUTHOR_EMAIL": email,
+            "GIT_COMMITTER_NAME": name,
+            "GIT_COMMITTER_EMAIL": email,
+        }
+        self._run("commit", "--no-verify", "--no-gpg-sign", "--cleanup=verbatim", "-m", message, env=identity)
+        return self.rev_parse("HEAD")
+
     def commit_allow_empty(self, message: str) -> str:
         self._run("commit", "--allow-empty", "--no-verify", "-m", message)
         return self.rev_parse("HEAD")

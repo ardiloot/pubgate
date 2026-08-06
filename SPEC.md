@@ -124,8 +124,8 @@ merge the source into main, open or satisfy the stage review gate, contact the p
 1. Run publish startup
 2. If `origin/pubgate/public-approved:.pubgate-staged` is missing → error ("run `stage` and merge the internal PR first")
 3. If `public-remote/main:.pubgate-staged` exists and equals `origin/pubgate/public-approved:.pubgate-staged` → exit (already delivered or nothing pending for public delivery)
-4. Read the absorbed baseline from `origin/pubgate/public-approved:.pubgate-absorbed`; create or update branch `pubgate/publish` based on this absorbed commit, replacing all content with the current content of `origin/pubgate/public-approved`
-5. Open or update public PR (`pubgate/publish` → `main`); public CI must pass before merge
+4. Require `--author-name`, `--author-email`, and `--message`, then read the absorbed baseline from `origin/pubgate/public-approved:.pubgate-absorbed`; create or update branch `pubgate/publish` based on this absorbed commit, replacing all content with the current content of `origin/pubgate/public-approved`. Use the supplied public identity for both Git author and committer. Use the supplied message as the public commit message; its first line is the subject and the remaining body may contain standard trailers. Never fall back to internal Git configuration or generate a public message. Disable commit signing so an internal signing key cannot leak. Internal stage commits are logged for the operator but never embedded in the public commit or PR
+5. Open or update public PR (`pubgate/publish` → `main`) using the publish commit subject as the title and the remaining commit message as the body; public CI must pass before merge
 6. Done; after the public PR is merged, the user may run `absorb` so `.pubgate-absorbed` catches up to the new `public-remote/main` commit (recommended but not required before the next `stage`/`publish` cycle)
 
 ## Core design principle: controlled divergence

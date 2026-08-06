@@ -1,10 +1,33 @@
 import logging
+from email.headerregistry import Address
 
 from .config import Config
+from .errors import PubGateError
 from .git import GitRepo
-from .models import CommitInfo, format_commit
 
 logger = logging.getLogger(__name__)
+
+
+def normalize_publish_metadata(message: str, author_name: str, author_email: str) -> tuple[str, str, str]:
+    message = message.replace("\r\n", "\n").replace("\r", "\n").strip()
+    if not message:
+        raise PubGateError("Error: publish message must not be empty.")
+    if "\x00" in message:
+        raise PubGateError("Error: publish message must not contain NUL characters.")
+
+    author_name = author_name.strip()
+    if not author_name or any(char in author_name for char in "\r\n\x00<>"):
+        raise PubGateError("Error: public author name must be non-empty and single-line.")
+
+    author_email = author_email.strip()
+    if not author_email or any(char in author_email for char in "\r\n\x00<>"):
+        raise PubGateError("Error: invalid public author email.")
+    try:
+        author_email = Address(addr_spec=author_email).addr_spec
+    except ValueError as exc:
+        raise PubGateError("Error: invalid public author email.") from exc
+
+    return message, author_name, author_email
 
 
 def resolve_publish_base(
@@ -12,7 +35,7 @@ def resolve_publish_base(
     git: GitRepo,
     absorbed_sha: str,
     public_head: str,
-    preview_ref: str,
+    approved_ref: str,
     *,
     remote_sha: str | None,
 ) -> tuple[str, str]:
@@ -21,7 +44,7 @@ def resolve_publish_base(
     if remote_sha is not None:
         found = git.find_commit_introducing(
             absorbed_sha,
-            preview_ref,
+            approved_ref,
             cfg.stage_state_file,
             remote_sha,
         )
@@ -51,18 +74,3 @@ def resolve_publish_base(
             )
 
     return publish_base, publish_log_base
-
-
-def publish_commit_message(
-    main_sha: str,
-    preview_commits: list[CommitInfo],
-    publish_log_base: str,
-    preview_ref: str,
-) -> str:
-    subject = f"pubgate: publish stage from {main_sha[:7]}"
-    lines = [subject]
-    if preview_commits:
-        lines.append("")
-        lines.append(f"Included commits ({publish_log_base[:7]}..{preview_ref}):")
-        lines.extend(f"  {i}. {format_commit(c)}" for i, c in enumerate(preview_commits, 1))
-    return "\n".join(lines)

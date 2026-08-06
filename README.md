@@ -137,7 +137,7 @@ pubgate prepares branches for review. When a supported CLI is available (`gh` fo
 1. Recommended: run `pubgate absorb` if the public repo has unabsorbed changes, then merge the absorb PR. This isn't required (`stage` and `publish` proceed either way) but it keeps the public snapshot clean.
 2. Run `pubgate stage`. This creates a `pubgate/stage` branch with the filtered snapshot for leak review.
 3. Review the PR from `pubgate/stage` → `pubgate/public-approved` (created automatically on GitHub/Azure DevOps, or create it manually on other hosts). This is the leak-review gate. Review it to ensure no internal code is exposed. Merge when satisfied.
-4. Run `pubgate publish`. This delivers the reviewed content to the public repo as a `pubgate/publish` branch.
+4. Run `pubgate publish` with a public author identity and commit message. This delivers the reviewed content to the public repo as a `pubgate/publish` branch.
 5. Review the PR from `pubgate/publish` → `main` on the public repo (created automatically on GitHub/Azure DevOps, or create it manually). Merge after CI passes.
 
 ### Incorporating public contributions: absorb
@@ -172,24 +172,48 @@ Created and updated automatically.
 
 ## CLI Reference
 
+```text
+pubgate [--repo-dir PATH] COMMAND [OPTIONS]
+```
+
 | Command | What it does |
-|---------|-------------|
+|---------|--------------|
 | `pubgate absorb` | Merge public contributions into an internal branch for review |
-| `pubgate preview` | Optionally generate a local-only filtered worktree from a clean local commit for testing |
-| `pubgate stage` | Build a filtered snapshot of internal code and create a branch for leak review |
+| `pubgate preview` | Generate a local-only filtered worktree from a clean local commit for testing |
+| `pubgate stage` | Build a filtered snapshot and create an internal leak-review branch |
 | `pubgate publish` | Push reviewed content to a PR branch on the public repo |
-| `pubgate status` | Show sync status of absorb, stage, and publish (read-only, fetches remotes) |
+| `pubgate status` | Show sync status (read-only; fetches remotes) |
 
-The PR commands (`absorb`, `stage`, and `publish`) accept `--dry-run`, `--force`, and `--no-pr`. `preview` accepts
-`--output` and `--force`; `status` has no flags. Command flags come after the command, while `--repo-dir` comes before it.
+`--repo-dir PATH` is the only global option and comes before the command. It selects a specific internal repository
+instead of the current directory, for example `pubgate --repo-dir /path/to/repo stage`.
 
-| Flag | Position | Description |
-|------|----------|-------------|
-| `--output` | after `preview` | Required path for the linked preview worktree; it must be outside the source worktree. Example: `pubgate preview --output ../project-public-preview` |
-| `--dry-run` | after command | Show planned actions without writing branches or files. Still syncs with remotes to ensure accurate plans. Example: `pubgate stage --dry-run` |
-| `--force` | after command | For PR commands, overwrite an existing PR branch. For `preview`, reset the output to the latest approved baseline, removing non-ignored untracked files while preserving ignored build artifacts. Example: `pubgate preview --output ../project-public-preview --force` |
-| `--no-pr` | after command | Skip automatic PR creation even when a supported CLI (`gh`/`az`) is available. pubgate will still push the branch and log manual steps. Example: `pubgate stage --no-pr` |
-| `--repo-dir` | before command | Run pubgate against a specific repo path instead of the current directory. Example: `pubgate --repo-dir /path/to/repo stage` |
+### Absorb, stage, and publish options
+
+These options come after the command.
+
+| Option | Description |
+|--------|-------------|
+| `--dry-run` | Show planned actions without creating branches, commits, or pushes. Remote refs are still fetched so the plan is current. |
+| `--force` | Overwrite an existing PR branch, typically when its previous PR was not merged. Protected destination branches are never force-pushed. |
+| `--no-pr` | Skip automatic PR creation. pubgate still pushes the branch and logs manual PR steps. |
+
+### Preview options
+
+| Option | Description |
+|--------|-------------|
+| `--output PATH` | Required path for the linked preview worktree. It must be outside the source worktree. |
+| `--force` | Reset and reuse a pubgate-owned preview worktree. Non-ignored untracked files are removed; ignored build artifacts are preserved. |
+
+### Publish options
+
+All three options are required, including with `--dry-run`. pubgate never falls back to the internal repository's Git
+identity or generates a public commit message. Public commits are left unsigned so an internal signing key cannot leak.
+
+| Option | Description |
+|--------|-------------|
+| `--author-name NAME` | Public Git author name. Also used as the committer name so the internal identity cannot leak. |
+| `--author-email EMAIL` | Public Git author email. Also used as the committer email. |
+| `--message MESSAGE` | Public commit message. The first line becomes the PR title; the remaining body may contain standard trailers such as `Co-authored-by: Name <email>`. The shell must pass multiline text as one argument. |
 
 ## Configuration
 
@@ -237,7 +261,7 @@ ignore = [
 - **Empty files after scrubbing**: files that become empty after removing `BEGIN-INTERNAL` blocks are still included in the staged snapshot.
 - **External contribution between stage and publish**: if someone pushes to the public repo after you stage but before you publish, `publish` still proceeds: it bases the public PR on the last absorbed commit, and git's three-way merge preserves external contributions or surfaces conflicts in the public PR. For a clean snapshot, run `absorb` → merge absorb PR → `stage` → merge stage PR → `publish`.
 - **Stale branch cleanup**: after you merge a PR and its source branch is auto-deleted on the server, pubgate automatically prunes the stale local branch on the next run. No manual cleanup needed.
-- **Commit messages**: absorb commit messages list the public commits being absorbed (safe, they are already public). Stage commit messages list the internal commits since the last stage (safe, stays on the internal repo; useful context for the leak reviewer).
+- **Commit messages**: absorb commit messages list the public commits being absorbed (safe, they are already public). Stage commit messages list internal commits for the leak reviewer and remain internal. Publish requires an explicit public message and identity; internal stage metadata is logged locally but never embedded in the public commit or PR.
 - **Repeated publish without absorb**: if you publish multiple times without running `absorb` between cycles, each publish PR is based on the same absorbed commit. This produces a trivially resolvable merge conflict on `.pubgate-staged` in the public PR (take the newer value). Running `absorb` between cycles avoids this.
 - **Do not edit the pubgate PR branch directly**: the `pubgate/publish` branch must only contain content produced by `publish`. Manual edits to this branch before merging will be silently overwritten by the next publish cycle (they are not detected as external contributions). If published content needs a fix, make the change in the internal repo and re-run `stage` → `publish`.
 
@@ -284,8 +308,8 @@ pubgate stage
 # → PR: pubgate/stage → pubgate/public-approved (auto-created on GitHub/Azure DevOps)
 # → Review for leaks, merge it
 
-# 5. Publish to public repo
-pubgate publish
+# 5. Publish to public repo with explicit public metadata
+pubgate publish --author-name "Release Bot" --author-email "release@example.com" --message "Initial public release"
 # Output: pushes pubgate/publish to the public remote
 # → PR: pubgate/publish → main on the public repo (auto-created on GitHub/Azure DevOps)
 # → Merge after CI passes

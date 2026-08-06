@@ -110,12 +110,11 @@ def snapshot_unchanged_ref(
 
 
 def stage_commit_message(
-    cfg: Config,
     main_head: str,
     previous_stage_sha: str | None,
     commits: list[CommitInfo],
 ) -> str:
-    subject = f"pubgate: stage from {cfg.internal_main_branch} {main_head[:7]}"
+    subject = f"pubgate: filtered snapshot at {main_head[:7]}"
     if previous_stage_sha is None or not commits:
         return subject
     lines = [subject, ""]

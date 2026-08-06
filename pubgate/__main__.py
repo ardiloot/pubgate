@@ -48,12 +48,24 @@ def build_parser() -> argparse.ArgumentParser:
     preview.add_argument("--output", required=True, help="Path for the linked preview worktree")
     preview.add_argument("--force", action="store_true", help="Reset and reuse an existing pubgate preview worktree")
 
-    for cmd, help_text in (
-        (Command.STAGE.value, "Generate stage candidate and open internal PR into pubgate/public-approved"),
-        (Command.PUBLISH.value, "Push reviewed pubgate/public-approved content to the public repo and open PR"),
-    ):
-        sp = sub.add_parser(cmd, help=help_text)
-        _add_common_flags(sp)
+    stage = sub.add_parser(
+        Command.STAGE.value,
+        help="Generate stage candidate and open internal PR into pubgate/public-approved",
+    )
+    _add_common_flags(stage)
+
+    publish = sub.add_parser(
+        Command.PUBLISH.value,
+        help="Push reviewed pubgate/public-approved content to the public repo and open PR",
+    )
+    _add_common_flags(publish)
+    publish.add_argument(
+        "--message",
+        required=True,
+        help="Public commit message (first line becomes the PR title)",
+    )
+    publish.add_argument("--author-name", required=True, help="Public Git author and committer name")
+    publish.add_argument("--author-email", required=True, help="Public Git author and committer email")
 
     sub.add_parser(Command.STATUS.value, help="Show sync status of absorb, stage, and publish")
 
@@ -100,7 +112,12 @@ def main(argv: list[str] | None = None) -> None:
                 case Command.STAGE:
                     pg.stage(**flags)
                 case Command.PUBLISH:
-                    pg.publish(**flags)
+                    pg.publish(
+                        **flags,
+                        message=args.message,
+                        author_name=args.author_name,
+                        author_email=args.author_email,
+                    )
     except PubGateError as exc:
         logger.error("Command failed: %s", exc)
         sys.exit(1)
