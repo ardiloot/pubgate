@@ -334,19 +334,38 @@ class TestSnapshotUnreadableFile:
         topo.bootstrap_absorb()
         topo.commit_internal({"normal.txt": "ok\n", "broken.txt": "will-be-unreadable\n"})
 
-        original_read = GitRepo.read_file_auto
+        tree_blobs = topo.work_dir.git.ls_tree_blob_ids("main")
+        broken_id = tree_blobs["broken.txt"]
+        original_read = GitRepo.read_blobs_auto
 
-        def selective_read(self_inner, ref, path):
-            if path == "broken.txt":
-                return None
-            return original_read(self_inner, ref, path)
+        def selective_read(self_inner, object_ids):
+            contents = original_read(self_inner, object_ids)
+            return [None if object_id == broken_id else content for object_id, content in zip(object_ids, contents)]
 
-        with patch.object(GitRepo, "read_file_auto", selective_read):
+        with patch.object(GitRepo, "read_blobs_auto", selective_read):
             topo.pubgate.stage()
 
         files = topo.work_dir.list_files_at_ref(topo.cfg.internal_stage_branch)
         assert "normal.txt" in files
         assert "broken.txt" not in files
+
+
+class TestApplyStageSnapshot:
+    def test_batches_literal_paths_and_deletions(self, topo: Topology):
+        from pubgate.stage_snapshot import apply_stage_snapshot
+
+        topo.work_dir.commit_files({"delete me.txt": "old\n"}, "add deleted file")
+        snapshot = {
+            "[draft].txt": "new\n",
+            "space name.bin": b"\x00data",
+        }
+
+        apply_stage_snapshot(topo.work_dir.git, snapshot, ".pubgate-staged", "source-head\n")
+        topo.work_dir.git.commit("apply snapshot")
+
+        assert set(topo.work_dir.list_files_at_ref("HEAD")) == {*snapshot, ".pubgate-staged"}
+        assert topo.work_dir.read_file_at_ref("HEAD", "[draft].txt") == "new\n"
+        assert topo.work_dir.git.read_file_at_ref_bytes("HEAD", "space name.bin") == b"\x00data"
 
 
 class TestEnsurePublicBranchCleanup:

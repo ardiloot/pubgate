@@ -16,22 +16,24 @@ def build_stage_snapshot(
     ignore_patterns: list[str],
     excluded: frozenset[str],
 ) -> tuple[dict[str, str | bytes], int]:
-    all_files = git.ls_tree(ref)
+    tree_blobs = git.ls_tree_blob_ids(ref)
     snapshot: dict[str, str | bytes] = {}
     lfs_files: list[str] = []
+    included: list[str] = []
 
-    for path in all_files:
+    for path in tree_blobs:
         if path in excluded:
             logger.debug("Excluded: %s", path)
             continue
         if is_ignored(path, ignore_patterns):
             logger.debug("Ignored: %s", path)
             continue
+        included.append(path)
 
-        content = git.read_file_auto(ref, path)
+    contents = git.read_blobs_auto([tree_blobs[path] for path in included])
+    for path, content in zip(included, contents, strict=True):
         if content is None:
             continue
-
         if isinstance(content, bytes):
             snapshot[path] = content
         elif is_lfs_pointer(content):
@@ -40,7 +42,10 @@ def build_stage_snapshot(
             snapshot[path] = content
         else:
             try:
-                content = scrub_internal_blocks(content, path=path)
+                scrubbed = scrub_internal_blocks(content, path=path)
+                if scrubbed != content:
+                    logger.debug("Scrubbed internal sections: %s", path)
+                content = scrubbed
                 check_residual_markers(content, path)
                 check_conflict_markers(content, path)
             except ValueError as exc:
@@ -57,14 +62,22 @@ def apply_stage_snapshot(
     git: GitRepo,
     snapshot: dict[str, str | bytes],
     stage_state_file: str,
+    stage_state_content: str,
 ) -> None:
     existing = git.ls_tree("HEAD")
+    changed: list[str] = []
     for path in existing:
         if path not in snapshot and path != stage_state_file:
-            git.remove_file_and_stage(path)
+            git.remove_file(path)
+            changed.append(path)
 
     for path, content in sorted(snapshot.items()):
-        git.write_file_and_stage_auto(path, content)
+        git.write_file_auto(path, content)
+        changed.append(path)
+
+    git.write_file_auto(stage_state_file, stage_state_content)
+    changed.append(stage_state_file)
+    git.stage_paths(changed)
 
 
 def snapshot_unchanged_ref(

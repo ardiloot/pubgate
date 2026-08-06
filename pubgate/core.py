@@ -272,8 +272,7 @@ class PubGate:
         ensure_public_branch(cfg, git)
 
         def _stage_work() -> bool:
-            apply_stage_snapshot(git, snapshot, cfg.stage_state_file)
-            git.write_file_and_stage(cfg.stage_state_file, main_head + "\n")
+            apply_stage_snapshot(git, snapshot, cfg.stage_state_file, main_head + "\n")
 
             if not git.has_staged_changes():
                 logger.info("No changes to stage (%s is already up to date)", cfg.internal_approved_branch)
@@ -327,22 +326,26 @@ class PubGate:
             raise PubGateError("Error: preview does not support sparse checkouts.")
 
         existing = git.find_worktree(output_path)
+        if existing is not None and not output_path.exists():
+            if existing.lock_reason != _PREVIEW_LOCK_REASON:
+                raise PubGateError(
+                    f"Error: refusing to remove missing worktree '{output_path}'; it is not a pubgate preview worktree."
+                )
+            git.remove_locked_worktree(output_path)
+            logger.debug("Removed missing preview worktree registration: %s", output_path)
+            existing = None
+
         if output_path.exists() or existing is not None:
             if not force:
                 raise PubGateError(f"Error: preview output '{output_path}' already exists. Use --force to replace it.")
             if existing is None or existing.lock_reason != _PREVIEW_LOCK_REASON:
                 raise PubGateError(f"Error: refusing to replace '{output_path}'; it is not a pubgate preview worktree.")
-            if not output_path.exists():
-                raise PubGateError(
-                    f"Error: preview worktree '{output_path}' is missing. Remove its Git worktree entry first."
-                )
 
         git.fetch("origin")
         approved_ref = f"origin/{cfg.internal_approved_branch}"
-        approved_exists = git.remote_branch_exists("origin", cfg.internal_approved_branch)
-        if approved_exists:
-            approved_base = git.rev_parse(approved_ref)
-        else:
+        approved_base = git.try_rev_parse(approved_ref)
+        approved_exists = approved_base is not None
+        if approved_base is None:
             approved_base = git.create_empty_root_commit("pubgate: initialize local preview base")
 
         # Validate a present absorb state without requiring bootstrap.
@@ -364,10 +367,10 @@ class PubGate:
                 preview_git.clean_untracked()
                 preview_git.reset_hard(approved_base, skip_lfs_smudge=True)
 
-            apply_stage_snapshot(preview_git, snapshot, cfg.stage_state_file)
-            preview_git.write_file_and_stage(cfg.stage_state_file, source_head + "\n")
+            apply_stage_snapshot(preview_git, snapshot, cfg.stage_state_file, source_head + "\n")
             preview_git.clean_untracked()
-            preview_git.lfs_checkout()
+            if lfs_count:
+                preview_git.lfs_checkout()
 
             unexpected = [
                 line

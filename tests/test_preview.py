@@ -53,8 +53,12 @@ class TestPreviewWorkflow:
         source_status = topo.work_dir.run("status", "--porcelain")
         output = topo.tmp_dir / "preview"
 
-        with caplog.at_level(logging.INFO, logger="pubgate"):
+        with (
+            patch.object(GitRepo, "lfs_checkout") as lfs_checkout,
+            caplog.at_level(logging.DEBUG, logger="pubgate"),
+        ):
             topo.pubgate.preview(output=output)
+        lfs_checkout.assert_not_called()
 
         preview_git = GitRepo(output)
         assert preview_git.current_branch() == "HEAD"
@@ -69,6 +73,7 @@ class TestPreviewWorkflow:
         assert f"Preview ready at {output}" in caplog.text
         assert f"Filtered commit: {source_head[:7]}" in caplog.text
         assert f"Comparison base: empty (origin/{topo.cfg.internal_approved_branch} does not exist)" in caplog.text
+        assert "Scrubbed internal sections: mixed.py" in caplog.text
         assert "Changes are staged; run tests from the preview worktree." in caplog.text
 
         source_git = topo.work_dir.git
@@ -175,6 +180,21 @@ class TestPreviewWorkflow:
         assert GitRepo(output)._run("write-tree").stdout.strip() == tree_before
         topo.work_dir.git.remove_locked_worktree(output)
 
+    def test_recreates_manually_deleted_preview(self, topo: Topology):
+        from conftest import _force_rmtree
+
+        output = topo.tmp_dir / "preview"
+        topo.pubgate.preview(output=output)
+        _force_rmtree(output)
+
+        topo.pubgate.preview(output=output)
+
+        info = topo.work_dir.git.find_worktree(output)
+        assert info is not None
+        assert info.lock_reason == "pubgate-preview-v1"
+        assert output.exists()
+        topo.work_dir.git.remove_locked_worktree(output)
+
     def test_rejects_malformed_absorb_state(self, topo: Topology):
         topo.work_dir.commit_files({topo.cfg.absorb_state_file: "not-a-sha\n"}, "bad absorb state")
         output = topo.tmp_dir / "preview"
@@ -208,6 +228,20 @@ class TestPreviewWorkflow:
         try:
             with pytest.raises(PubGateError, match="not a pubgate preview worktree"):
                 topo.pubgate.preview(output=output, force=True)
+        finally:
+            source_git.remove_locked_worktree(output)
+
+    def test_refuses_missing_unrelated_worktree(self, topo: Topology):
+        from conftest import _force_rmtree
+
+        output = topo.tmp_dir / "other-worktree"
+        source_git = topo.work_dir.git
+        source_git.add_locked_worktree(output, "HEAD", "unrelated")
+        _force_rmtree(output)
+        try:
+            with pytest.raises(PubGateError, match="refusing to remove missing worktree"):
+                topo.pubgate.preview(output=output)
+            assert source_git.find_worktree(output) is not None
         finally:
             source_git.remove_locked_worktree(output)
 

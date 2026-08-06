@@ -78,11 +78,12 @@ class GitRepo:
         *args: str,
         check: bool = True,
         timeout: int = _TIMEOUT_LOCAL,
+        input_bytes: bytes | None = None,
     ) -> subprocess.CompletedProcess[bytes]:
         cmd = ["git", "-C", str(self.repo_dir), *args]
         logger.debug("git %s", " ".join(args))
         try:
-            result = subprocess.run(cmd, capture_output=True, timeout=timeout)  # noqa: S603
+            result = subprocess.run(cmd, capture_output=True, timeout=timeout, input=input_bytes)  # noqa: S603
         except subprocess.TimeoutExpired as exc:
             raise GitError(list(args), -1, f"timed out after {timeout}s") from exc
         logger.debug("git exit=%d", result.returncode)
@@ -307,6 +308,10 @@ class GitRepo:
     def rev_parse(self, ref: str) -> str:
         return self._run("rev-parse", ref).stdout.strip()
 
+    def try_rev_parse(self, ref: str) -> str | None:
+        result = self._run("rev-parse", "--verify", ref, check=False)
+        return result.stdout.strip() if result.returncode == 0 else None
+
     def rev_list(self, base: str, head: str, *, first_parent: bool = False) -> list[str]:
         args = ["rev-list"]
         if first_parent:
@@ -351,6 +356,54 @@ class GitRepo:
     def ls_tree(self, ref: str) -> list[str]:
         result = self._run_bytes("ls-tree", "-r", "--name-only", "-z", ref)
         return [p.decode("utf-8", errors="surrogateescape") for p in result.stdout.split(b"\x00") if p]
+
+    def ls_tree_blob_ids(self, ref: str) -> dict[str, str]:
+        result = self._run_bytes("ls-tree", "-r", "-z", ref)
+        entries: dict[str, str] = {}
+        for raw_entry in result.stdout.split(b"\x00"):
+            if not raw_entry:
+                continue
+            metadata, raw_path = raw_entry.split(b"\t", 1)
+            _mode, object_type, object_id = metadata.split(b" ", 2)
+            if object_type == b"blob":
+                path = raw_path.decode("utf-8", errors="surrogateescape")
+                entries[path] = object_id.decode("ascii")
+        return entries
+
+    def read_blobs_auto(self, object_ids: list[str]) -> list[str | bytes | None]:
+        if not object_ids:
+            return []
+
+        request = "".join(f"{object_id}\n" for object_id in object_ids).encode("ascii")
+        result = self._run_bytes("cat-file", "--batch", input_bytes=request)
+        values: list[str | bytes | None] = []
+        offset = 0
+
+        for expected_id in object_ids:
+            header_end = result.stdout.find(b"\n", offset)
+            if header_end < 0:
+                raise GitError(["cat-file", "--batch"], 1, "truncated batch header")
+            header = result.stdout[offset:header_end].split()
+            if len(header) == 2 and header[0].decode("ascii") == expected_id and header[1] == b"missing":
+                values.append(None)
+                offset = header_end + 1
+                continue
+            if len(header) != 3 or header[0].decode("ascii") != expected_id or header[1] != b"blob":
+                raise GitError(["cat-file", "--batch"], 1, f"unexpected batch header: {header!r}")
+
+            size = int(header[2])
+            content_start = header_end + 1
+            content_end = content_start + size
+            if content_end >= len(result.stdout) or result.stdout[content_end : content_end + 1] != b"\n":
+                raise GitError(["cat-file", "--batch"], 1, "truncated batch content")
+            data = result.stdout[content_start:content_end]
+            offset = content_end + 1
+            try:
+                values.append(data.decode("utf-8"))
+            except (UnicodeDecodeError, ValueError):
+                values.append(data)
+
+        return values
 
     def diff_tree(self, ref_a: str, ref_b: str) -> list[FileChange]:
         result = self._run_bytes("diff-tree", "-r", "--no-commit-id", "--name-status", "-z", ref_a, ref_b)
@@ -447,6 +500,32 @@ class GitRepo:
     def stage(self, path: str) -> None:
         self._run("add", path)
 
+    def stage_paths(self, paths: list[str]) -> None:
+        if not paths:
+            return
+        pathspec = b"\x00".join(path.encode("utf-8", errors="surrogateescape") for path in paths) + b"\x00"
+        self._run_bytes(
+            "--literal-pathspecs",
+            "add",
+            "-A",
+            "--pathspec-from-file=-",
+            "--pathspec-file-nul",
+            input_bytes=pathspec,
+        )
+
+    def write_file_auto(self, path: str, content: str | bytes) -> None:
+        full_path = self.repo_dir / path
+        full_path.parent.mkdir(parents=True, exist_ok=True)
+        if isinstance(content, bytes):
+            full_path.write_bytes(content)
+        else:
+            full_path.write_text(content, encoding="utf-8", newline="")
+
+    def remove_file(self, path: str) -> None:
+        full_path = self.repo_dir / path
+        if full_path.exists():
+            full_path.unlink()
+
     def write_file_and_stage(self, repo_relative_path: str, content: str) -> None:
         full_path = self.repo_dir / repo_relative_path
         full_path.parent.mkdir(parents=True, exist_ok=True)
@@ -466,9 +545,7 @@ class GitRepo:
             self.write_file_and_stage(path, content)
 
     def remove_file_and_stage(self, repo_relative_path: str) -> None:
-        full_path = self.repo_dir / repo_relative_path
-        if full_path.exists():
-            full_path.unlink()
+        self.remove_file(repo_relative_path)
         self._run("rm", "--cached", "--ignore-unmatch", repo_relative_path)
 
     def rm_all_tracked(self) -> None:
@@ -556,8 +633,8 @@ class GitRepo:
             logger.warning("LFS push failed (exit %d): %s", result.returncode, result.stderr.strip())
 
     def lfs_checkout(self) -> None:
-        if not self.is_lfs_available():
-            return
         result = self._run("lfs", "checkout", check=False, timeout=_TIMEOUT_NETWORK)
-        if result.returncode != 0:
+        if result.returncode == 0:
+            self._lfs_available = True
+        else:
             logger.warning("LFS checkout failed (exit %d): %s", result.returncode, result.stderr.strip())
