@@ -1,8 +1,9 @@
 import fnmatch
 import re
+from collections.abc import Sequence
 from pathlib import PurePosixPath
 
-__all__ = ["scrub_internal_blocks", "check_residual_markers", "is_ignored"]
+__all__ = ["scrub_internal_blocks", "check_residual_markers", "is_ignored", "matches_pattern"]
 
 # ---------------------------------------------------------------------------
 # Internal block markers
@@ -65,10 +66,14 @@ def check_conflict_markers(content: str, path: str) -> None:
         )
 
 
-def is_ignored(path: str, patterns: list[str]) -> bool:
+def matches_pattern(path: str, patterns: Sequence[str]) -> bool:
     for pattern in patterns:
         if fnmatch.fnmatch(path, pattern):
             return True
         if fnmatch.fnmatch(PurePosixPath(path).name, pattern):
             return True
     return False
+
+
+def is_ignored(path: str, patterns: Sequence[str]) -> bool:
+    return matches_pattern(path, patterns)

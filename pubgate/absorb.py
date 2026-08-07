@@ -2,6 +2,7 @@ import logging
 import tempfile
 from pathlib import Path
 
+from .auxiliary import is_auxiliary_path
 from .config import Config
 from .errors import GitError, PubGateError
 from .filtering import scrub_internal_blocks
@@ -49,7 +50,14 @@ def check_absorb(cfg: Config, git: GitRepo) -> AbsorbResult:
     return AbsorbResult(AbsorbStatus.NEEDS_ABSORB, public_head, last_absorbed)
 
 
-def resolve_and_apply(cfg: Config, git: GitRepo, base_sha: str, public_head: str) -> list[str]:
+def resolve_and_apply(
+    cfg: Config,
+    git: GitRepo,
+    base_sha: str,
+    public_head: str,
+    *,
+    auxiliary_destinations: tuple[str, ...] = (),
+) -> list[str]:
     public_ref = f"{cfg.public_remote}/{cfg.public_main_branch}"
     excluded = cfg.state_files
     staged_sha: str | None = None
@@ -59,7 +67,15 @@ def resolve_and_apply(cfg: Config, git: GitRepo, base_sha: str, public_head: str
             staged_sha = stage_ref.sha
     except PubGateError as exc:
         logger.warning("Could not read stage state from %s: %s", public_ref, exc)
-    return _apply_absorb_changes(git, base_sha, public_head, public_ref, excluded=excluded, staged_sha=staged_sha)
+    return _apply_absorb_changes(
+        git,
+        base_sha,
+        public_head,
+        public_ref,
+        excluded=excluded,
+        staged_sha=staged_sha,
+        auxiliary_destinations=auxiliary_destinations,
+    )
 
 
 def absorb_commit_message(
@@ -143,9 +159,16 @@ def _apply_absorb_changes(
     *,
     excluded: frozenset[str] = frozenset(),
     staged_sha: str | None = None,
+    auxiliary_destinations: tuple[str, ...] = (),
 ) -> list[str]:
     changes = git.diff_tree(base_sha, public_head)
-    changes = [c for c in changes if c.path not in excluded and (c.old_path is None or c.old_path not in excluded)]
+    changes = [
+        c
+        for c in changes
+        if c.path not in excluded
+        and (c.old_path is None or c.old_path not in excluded)
+        and not is_auxiliary_path(c.path, auxiliary_destinations)
+    ]
     actions: list[str] = []
 
     for change in changes:

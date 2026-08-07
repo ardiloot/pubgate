@@ -1,5 +1,6 @@
 import logging
 
+from .auxiliary import has_auxiliary_changes, read_auxiliary_destinations
 from .config import Config
 from .errors import GitError, PubGateError
 from .git import GitRepo
@@ -121,8 +122,12 @@ def _stage_status(cfg: Config, git: GitRepo) -> None:
         logger.info("Stage (internal → review): not yet staged")
         logger.info("  → run 'pubgate stage'")
     elif stage_ref.sha == main_head:
-        logger.info("Stage (internal → review): up to date")
-        logger.info("  Staged: %s → %s", stage_ref.sha[:7], cfg.internal_approved_branch)
+        if cfg.auxiliary_dirs:
+            logger.info("Stage (internal → review): internal commit up to date; auxiliary sources not checked")
+            logger.info("  → run 'pubgate preview' or 'pubgate stage' to evaluate auxiliary files")
+        else:
+            logger.info("Stage (internal → review): up to date")
+            logger.info("  Staged: %s → %s", stage_ref.sha[:7], cfg.internal_approved_branch)
     else:
         try:
             commits = git.log_oneline(stage_ref.sha, main_head)
@@ -175,7 +180,23 @@ def _publish_status(cfg: Config, git: GitRepo, public_fetch_ok: bool) -> None:
 
     remote_stage_ref = StateRef.read(git, public_main, cfg.stage_state_file)
     if remote_stage_ref is not None and remote_stage_ref.sha == stage_ref.sha:
-        logger.info("Publish (review → public): up to date")
+        auxiliary_destinations = read_auxiliary_destinations(
+            git,
+            stage_ref.sha,
+            fallback=cfg.auxiliary_destinations,
+        )
+        if not auxiliary_destinations:
+            logger.info("Publish (review → public): up to date")
+            return
+        auxiliary_changed = has_auxiliary_changes(
+            git.diff_tree(public_main, origin_approved),
+            auxiliary_destinations,
+        )
+        if auxiliary_changed:
+            logger.info("Publish (review → public): ready (auxiliary files changed)")
+            logger.info("  → run 'pubgate publish'")
+        else:
+            logger.info("Publish (review → public): up to date")
     else:
         published = remote_stage_ref.sha[:7] if remote_stage_ref else "(none)"
         logger.info("Publish (review → public): ready")

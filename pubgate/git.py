@@ -537,7 +537,7 @@ class GitRepo:
 
     def remove_file(self, path: str) -> None:
         full_path = self.repo_dir / path
-        if full_path.exists():
+        if full_path.exists() or full_path.is_symlink():
             full_path.unlink()
 
     def write_file_and_stage(self, repo_relative_path: str, content: str) -> None:

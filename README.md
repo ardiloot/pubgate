@@ -20,11 +20,12 @@ pubgate prepares branches for review. You create and merge PRs on your git host 
 - Absorb public contributions back into internal main with three-way merge
 - Optionally preview a filtered local commit before merging or pushing it
 - Stage changes behind an internal leak-review PR gate
+- Add selected files from external local data directories to the reviewed snapshot
 - Publish reviewed content through a PR on the public repo
 
 Filtering is mechanical: built-in ignore patterns exclude common internal/private/secret file naming conventions out of the box, `BEGIN-INTERNAL` / `END-INTERNAL` markers strip sections from individual files, and `pubgate.toml` is always excluded automatically. Custom `ignore` patterns in the config replace the defaults.
 
-**Core principle:** the public repo is always an exact filtered copy of internal, never an independent fork. If external contributions arrive mid-cycle, `publish` bases the public PR on the last absorbed commit; git's three-way merge preserves them or surfaces conflicts. Divergence stays controlled and bounded.
+**Core principle:** the public repo is always an exact reviewed snapshot of filtered internal content plus configured auxiliary data, never an independent fork. If external contributions arrive mid-cycle, `publish` bases the public PR on the last absorbed commit; git's three-way merge preserves them or surfaces conflicts. Divergence stays controlled and bounded.
 
 The two workflows:
 
@@ -123,12 +124,13 @@ Normally, testing filtered output requires merging to internal `main`, running `
 `pubgate/public-approved`. For easier local testing, commit locally and run `preview`:
 
 ```bash
-pubgate preview --output ../project-public-preview
+pubgate preview
 ```
 
 Preview requires a clean worktree but accepts any local commit, including unpushed commits. It filters exact local `HEAD`
-into a separate worktree based on the latest approved content. Browse and test there. Preview never contacts the public
-repo or replaces stage review; when ready, merge the source commit into `main` and run `pubgate stage`.
+into a sibling `<repo-name>-preview` worktree based on the latest approved content. Use `--output PATH` to choose another
+location. Preview never contacts the public repo or replaces stage review; when ready, merge the source commit into
+`main` and run `pubgate stage`.
 
 ### Making changes public: absorb → stage → publish
 
@@ -201,7 +203,7 @@ These options come after the command.
 
 | Option | Description |
 |--------|-------------|
-| `--output PATH` | Required path for the linked preview worktree. It must be outside the source worktree. |
+| `--output PATH` | Path for the linked preview worktree. Defaults to `../<repo-name>-preview` and must be outside the source worktree. |
 | `--force` | Reset and reuse a pubgate-owned preview worktree. Non-ignored untracked files are removed; ignored build artifacts are preserved. |
 
 ### Publish options
@@ -217,7 +219,7 @@ identity or generates a public commit message. Public commits are left unsigned 
 
 ## Configuration
 
-Full `pubgate.toml` example (all fields shown with defaults, only `public_url` is required for first-time setup when the remote doesn't already exist):
+Base `pubgate.toml` example (all scalar/list fields shown with defaults; auxiliary tables are documented below):
 
 ```toml
 # Internal repo
@@ -248,12 +250,29 @@ ignore = [
 ]
 ```
 
+### Auxiliary directories
+
+Map external local directories into the reviewed snapshot:
+
+```toml
+[[auxiliary_dirs]]
+source = "../shared-assets/models"
+destination = "data/models"
+```
+
+- The whole source tree is copied recursively. Repeat the table for more mappings.
+- Optional filters such as `include = ["*.bin"]` and `exclude = ["*.tmp"]` use the same path/basename patterns as `ignore`; excludes win.
+- `source` may be absolute or relative to `pubgate.toml`; it must exist for `preview` and `stage`. `destination` is repository-relative.
+- Auxiliary files are copied as-is: `BEGIN-INTERNAL` markers are not processed. Use include/exclude rules to omit private files.
+- Files under `destination` are managed from `source`: `absorb` ignores public edits there, and removing the mapping deletes them on the next stage/publish cycle.
+
 ## Edge Cases
 
 - **Preview and Git LFS**: preview runs local-only `git lfs checkout` after staging. Locally available objects are materialized for testing while the index retains canonical pointers. Missing objects remain pointer files; preview never downloads them.
+- **Auxiliary status**: `status` does not read live auxiliary sources. When the internal SHA is staged, it reports that auxiliary files were not checked; run `preview` or `stage` to evaluate them through the real Git/LFS filters.
 - **Preview Git state**: preview records exact local source `HEAD` in `.pubgate-staged`, including an unpushed SHA. This identifies the local test snapshot but does not confer approval; never use the preview worktree as a publishing source. Because the candidate remains staged, Git-version tools report the approved baseline rather than the source commit.
 - **Binary files**: included as-is in staged snapshots (`BEGIN-INTERNAL` markers inside binaries are not processed); during absorb, binary modifications take the public version and are flagged for manual review.
-- **Git LFS files**: LFS pointers pass through all pipelines without modification. LFS files are treated as binary (never merged, never scrubbed for internal markers). pubgate runs `git lfs fetch`/`push` automatically during absorb and publish. Use ignore patterns in `pubgate.toml` to exclude sensitive LFS files from publication. If LFS is not installed, these operations are silently skipped.
+- **Git LFS files**: LFS pointers pass through all pipelines without modification. LFS files are treated as binary (never merged, never scrubbed for internal markers). pubgate transfers LFS objects during absorb and publish and after staging auxiliary files. Use ignore patterns in `pubgate.toml` to exclude sensitive internal LFS files from publication. If LFS is not installed, LFS-specific operations are skipped or reported.
 - **Renames on public repo**: the new path is copied in; the old file is kept locally and flagged for review.
 - **Deletions on public repo**: deleted files are kept locally and flagged for review in the absorb PR.
 - **Merge conflicts**: absorb uses three-way merge. Conflicts produce standard git conflict markers (`<<<<<<<`/`=======`/`>>>>>>>`) for manual resolution.

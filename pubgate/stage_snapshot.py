@@ -1,8 +1,15 @@
 import logging
+from collections.abc import Sequence
 
+from .auxiliary import AuxiliaryFile, copy_auxiliary_files
 from .config import Config
 from .errors import PubGateError
-from .filtering import check_conflict_markers, check_residual_markers, is_ignored, scrub_internal_blocks
+from .filtering import (
+    check_conflict_markers,
+    check_residual_markers,
+    is_ignored,
+    scrub_internal_blocks,
+)
 from .git import GitRepo, is_lfs_pointer
 from .models import CommitInfo, format_commit
 
@@ -62,17 +69,22 @@ def apply_stage_snapshot(
     snapshot: dict[str, str | bytes],
     stage_state_file: str,
     stage_state_content: str,
+    auxiliary_files: Sequence[AuxiliaryFile] = (),
 ) -> None:
     existing = git.ls_tree("HEAD")
+    desired = set(snapshot) | {file.destination_path for file in auxiliary_files}
     changed: list[str] = []
     for path in existing:
-        if path not in snapshot and path != stage_state_file:
+        if path not in desired and path != stage_state_file:
             git.remove_file(path)
             changed.append(path)
 
     for path, content in sorted(snapshot.items()):
         git.write_file_auto(path, content)
         changed.append(path)
+
+    copy_auxiliary_files(git.repo_dir, auxiliary_files)
+    changed.extend(file.destination_path for file in auxiliary_files)
 
     git.write_file_auto(stage_state_file, stage_state_content)
     changed.append(stage_state_file)

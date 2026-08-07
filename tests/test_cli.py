@@ -186,9 +186,9 @@ class TestRepoDirFlag:
         assert args.output == "../preview"
         assert args.force is True
 
-    def test_preview_requires_output(self):
-        with pytest.raises(SystemExit):
-            build_parser().parse_args(["preview"])
+    def test_preview_output_defaults_to_none(self):
+        args = build_parser().parse_args(["preview"])
+        assert args.output is None
 
     def test_publish_metadata_flags(self):
         message = "Release codec 1.0\n\nCo-authored-by: Alice Public <alice@example.com>"
@@ -224,6 +224,21 @@ class TestRepoDirFlag:
 
         ensure_remote.assert_not_called()
         preview.assert_called_once_with(output=str(output), force=False)
+
+    def test_preview_uses_sibling_default_output(self, tmp_path: Path):
+        (tmp_path / "pubgate.toml").write_text('public_url = "https://example.com/public.git"\n', encoding="utf-8")
+
+        with (
+            patch.object(GitRepo, "verify_repo"),
+            patch.object(GitRepo, "ensure_remote"),
+            patch.object(PubGate, "preview") as preview,
+        ):
+            main(["--repo-dir", str(tmp_path), "preview"])
+
+        preview.assert_called_once_with(
+            output=str(tmp_path.parent / f"{tmp_path.name}-preview"),
+            force=False,
+        )
 
     def test_publish_routes_metadata(self, tmp_path: Path):
         (tmp_path / "pubgate.toml").write_text('public_url = "https://example.com/public.git"\n', encoding="utf-8")

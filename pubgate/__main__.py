@@ -45,7 +45,7 @@ def build_parser() -> argparse.ArgumentParser:
         Command.PREVIEW.value,
         help="Generate an optional local-only stage preview worktree for testing",
     )
-    preview.add_argument("--output", required=True, help="Path for the linked preview worktree")
+    preview.add_argument("--output", help="Path for the linked preview worktree (default: ../<repo-name>-preview)")
     preview.add_argument("--force", action="store_true", help="Reset and reuse an existing pubgate preview worktree")
 
     stage = sub.add_parser(
@@ -103,7 +103,9 @@ def main(argv: list[str] | None = None) -> None:
         if cmd == Command.STATUS:
             pg.status()
         elif cmd == Command.PREVIEW:
-            pg.preview(output=args.output, force=args.force)
+            repo_root = git.repo_dir.resolve()
+            output = args.output or str(repo_root.parent / f"{repo_root.name}-preview")
+            pg.preview(output=output, force=args.force)
         else:
             flags = dict(dry_run=args.dry_run, force=args.force, no_pr=args.no_pr)
             match cmd:

@@ -3,6 +3,13 @@ from collections.abc import Callable
 from pathlib import Path
 
 from .absorb import AbsorbResult, absorb_commit_message, check_absorb, resolve_and_apply
+from .auxiliary import (
+    AuxiliaryFile,
+    build_auxiliary_files,
+    has_auxiliary_changes,
+    is_auxiliary_path,
+    read_auxiliary_destinations,
+)
 from .config import CONFIG_FILE, Config
 from .errors import GitError, PubGateError
 from .git import GitRepo
@@ -135,6 +142,15 @@ class PubGate:
         state_files = cfg.state_files
         changes = git.diff_tree(last_absorbed, public_head)
         changes = [c for c in changes if c.path not in state_files]
+        auxiliary_destinations = self._absorb_auxiliary_destinations(public_main)
+        ignored_auxiliary = [change for change in changes if is_auxiliary_path(change.path, auxiliary_destinations)]
+        changes = [change for change in changes if not is_auxiliary_path(change.path, auxiliary_destinations)]
+        if ignored_auxiliary:
+            logger.info("Ignoring %d public auxiliary path(s):", len(ignored_auxiliary))
+            for change in ignored_auxiliary[:10]:
+                logger.info("  %s", change.path)
+            if len(ignored_auxiliary) > 10:
+                logger.info("  ... and %d more", len(ignored_auxiliary) - 10)
         if not changes:
             logger.info("No file changes detected (metadata-only commits?). Updating tracking")
 
@@ -167,7 +183,13 @@ class PubGate:
 
         def _absorb_work() -> bool:
             nonlocal commit_message
-            actions = resolve_and_apply(cfg, git, last_absorbed, public_head)
+            actions = resolve_and_apply(
+                cfg,
+                git,
+                last_absorbed,
+                public_head,
+                auxiliary_destinations=auxiliary_destinations,
+            )
             if actions:
                 logger.info("Changes (base %s):", last_absorbed[:7])
             for a in actions:
@@ -217,15 +239,13 @@ class PubGate:
         main_head = git.rev_parse(cfg.internal_main_branch)
         approved_ref = f"origin/{cfg.internal_approved_branch}"
 
-        ignore_patterns = list(cfg.ignore)
-        snapshot, lfs_count = build_stage_snapshot(
-            git,
+        snapshot, lfs_count, auxiliary_files = self._build_outbound_snapshot(
             cfg.internal_main_branch,
-            ignore_patterns,
-            frozenset({CONFIG_FILE, cfg.stage_state_file}),
+            forbidden_roots=(git.repo_dir,),
         )
+        self._log_auxiliary_mappings(auxiliary_files, dry_run=dry_run)
 
-        unchanged_ref = snapshot_unchanged_ref(cfg, git, snapshot)
+        unchanged_ref = None if cfg.auxiliary_dirs else snapshot_unchanged_ref(cfg, git, snapshot)
         if unchanged_ref is not None:
             if unchanged_ref == cfg.internal_stage_branch:
                 if not force:
@@ -292,7 +312,7 @@ class PubGate:
         ensure_public_branch(cfg, git)
 
         def _stage_work() -> bool:
-            apply_stage_snapshot(git, snapshot, cfg.stage_state_file, main_head + "\n")
+            apply_stage_snapshot(git, snapshot, cfg.stage_state_file, main_head + "\n", auxiliary_files)
 
             if not git.has_staged_changes():
                 logger.info("No changes to stage (%s is already up to date)", cfg.internal_approved_branch)
@@ -311,6 +331,8 @@ class PubGate:
         )
         if committed:
             self._push_to_remote(cfg.internal_stage_branch, "origin", cfg.internal_stage_branch, force=force)
+            if auxiliary_files:
+                self.git.lfs_push("origin", cfg.internal_stage_branch)
             title, body = _split_message(full_msg)
             self._handle_pr(
                 remote="origin",
@@ -368,12 +390,11 @@ class PubGate:
 
         # Validate a present absorb state without requiring bootstrap.
         StateRef.read(git, "HEAD", cfg.absorb_state_file)
-        snapshot, lfs_count = build_stage_snapshot(
-            git,
+        snapshot, lfs_count, auxiliary_files = self._build_outbound_snapshot(
             "HEAD",
-            list(cfg.ignore),
-            frozenset({CONFIG_FILE, cfg.stage_state_file}),
+            forbidden_roots=(git.repo_dir, output_path),
         )
+        self._log_auxiliary_mappings(auxiliary_files)
 
         preview_git: GitRepo
         try:
@@ -385,9 +406,15 @@ class PubGate:
                 preview_git.clean_untracked()
                 preview_git.reset_hard(approved_base, skip_lfs_smudge=True)
 
-            apply_stage_snapshot(preview_git, snapshot, cfg.stage_state_file, source_head + "\n")
+            apply_stage_snapshot(
+                preview_git,
+                snapshot,
+                cfg.stage_state_file,
+                source_head + "\n",
+                auxiliary_files,
+            )
             preview_git.clean_untracked()
-            if lfs_count:
+            if lfs_count or auxiliary_files:
                 preview_git.lfs_checkout()
 
             unexpected = [
@@ -444,8 +471,17 @@ class PubGate:
         remote_stage_ref = StateRef.read(git, public_main, cfg.stage_state_file)
         if remote_stage_ref is not None:
             if remote_stage_ref.sha == stage_ref.sha:
-                logger.info("Already published (public repo is up to date)")
-                return
+                auxiliary_destinations = read_auxiliary_destinations(
+                    git,
+                    stage_ref.sha,
+                    fallback=cfg.auxiliary_destinations,
+                )
+                if not auxiliary_destinations:
+                    logger.info("Already published (public repo is up to date)")
+                    return
+                if not has_auxiliary_changes(git.diff_tree(public_main, approved_ref), auxiliary_destinations):
+                    logger.info("Already published (public repo is up to date)")
+                    return
 
         # Read absorbed baseline from origin/{internal_approved_branch}
         absorb_ref = StateRef.read(git, approved_ref, cfg.absorb_state_file)
@@ -565,6 +601,54 @@ class PubGate:
     # ------------------------------------------------------------------
     # Shared workflow (private)
     # ------------------------------------------------------------------
+
+    def _build_outbound_snapshot(
+        self,
+        ref: str,
+        *,
+        forbidden_roots: tuple[Path, ...],
+    ) -> tuple[dict[str, str | bytes], int, list[AuxiliaryFile]]:
+        snapshot, lfs_count = build_stage_snapshot(
+            self.git,
+            ref,
+            list(self.cfg.ignore),
+            frozenset({CONFIG_FILE, self.cfg.stage_state_file}),
+        )
+        auxiliary_files = build_auxiliary_files(
+            self.cfg.auxiliary_dirs,
+            internal_paths=set(snapshot),
+            forbidden_roots=forbidden_roots,
+        )
+        return snapshot, lfs_count, auxiliary_files
+
+    def _absorb_auxiliary_destinations(self, public_main: str) -> tuple[str, ...]:
+        destinations = set(self.cfg.auxiliary_destinations)
+        published_stage = StateRef.read(self.git, public_main, self.cfg.stage_state_file)
+        if published_stage is None:
+            return tuple(sorted(destinations))
+
+        destinations.update(
+            read_auxiliary_destinations(
+                self.git,
+                published_stage.sha,
+                fallback=tuple(destinations),
+            )
+        )
+        return tuple(sorted(destinations))
+
+    def _log_auxiliary_mappings(self, files: list[AuxiliaryFile], *, dry_run: bool = False) -> None:
+        action = "Would copy" if dry_run else "Copying"
+        for mapping in self.cfg.auxiliary_dirs:
+            prefix = mapping.destination + "/"
+            count = sum(file.destination_path.startswith(prefix) for file in files)
+            logger.info(
+                "%s auxiliary directory %s -> %s (%d %s)",
+                action,
+                mapping.source,
+                mapping.destination,
+                count,
+                "file" if count == 1 else "files",
+            )
 
     def _log_manual_pr_steps(
         self,
