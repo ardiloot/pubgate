@@ -1,4 +1,5 @@
 import logging
+import subprocess
 from unittest.mock import patch
 
 import pytest
@@ -37,6 +38,17 @@ class TestPreviewWorktreeLifecycle:
                 source_git.remove_locked_worktree(output)
 
         assert source_git.find_worktree(output) is None
+
+    def test_falls_back_when_git_does_not_support_nul_output(self, topo: Topology):
+        unsupported = subprocess.CompletedProcess(args=[], returncode=129, stdout=b"", stderr=b"unknown switch 'z'")
+        data = f"worktree {topo.work_dir.path}\nHEAD 0123456789012345678901234567890123456789\n\n".encode()
+        fallback = subprocess.CompletedProcess(args=[], returncode=0, stdout=data, stderr=b"")
+
+        with patch.object(topo.work_dir.git, "_run_bytes", side_effect=[unsupported, fallback]) as run:
+            worktrees = topo.work_dir.git.list_worktrees()
+
+        assert worktrees[0].path == topo.work_dir.path
+        assert run.call_count == 2
 
 
 class TestPreviewWorkflow:

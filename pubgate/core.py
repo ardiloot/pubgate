@@ -623,7 +623,11 @@ class PubGate:
 
     def _absorb_auxiliary_destinations(self, public_main: str) -> tuple[str, ...]:
         destinations = set(self.cfg.auxiliary_destinations)
-        published_stage = StateRef.read(self.git, public_main, self.cfg.stage_state_file)
+        try:
+            published_stage = StateRef.read(self.git, public_main, self.cfg.stage_state_file)
+        except PubGateError as exc:
+            logger.warning("Could not read stage state: %s", exc)
+            return tuple(sorted(destinations))
         if published_stage is None:
             return tuple(sorted(destinations))
 

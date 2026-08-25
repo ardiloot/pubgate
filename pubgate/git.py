@@ -192,11 +192,23 @@ class GitRepo:
     # ------------------------------------------------------------------
 
     def list_worktrees(self) -> list[WorktreeInfo]:
-        result = self._run_bytes("worktree", "list", "--porcelain", "-z")
+        result = self._run_bytes("worktree", "list", "--porcelain", "-z", check=False)
+        separator = b"\x00"
+        if result.returncode == 129:
+            logger.debug("NUL-delimited worktree output unavailable; using newline-delimited porcelain output")
+            result = self._run_bytes("worktree", "list", "--porcelain")
+            separator = b"\n"
+        elif result.returncode != 0:
+            raise GitError(
+                ["worktree", "list", "--porcelain", "-z"],
+                result.returncode,
+                result.stderr.decode(errors="replace").strip(),
+            )
+
         worktrees: list[WorktreeInfo] = []
         record: dict[str, str] = {}
 
-        for field_bytes in result.stdout.split(b"\x00"):
+        for field_bytes in result.stdout.split(separator):
             if not field_bytes:
                 if "worktree" in record:
                     worktrees.append(
@@ -657,8 +669,33 @@ class GitRepo:
             logger.warning("LFS push failed (exit %d): %s", result.returncode, result.stderr.strip())
 
     def lfs_checkout(self) -> None:
-        result = self._run("lfs", "checkout", check=False, timeout=_TIMEOUT_NETWORK)
-        if result.returncode == 0:
-            self._lfs_available = True
-        else:
+        if not self.is_lfs_available():
+            return
+
+        # Git LFS scans HEAD rather than the index, so expose the staged preview tree temporarily.
+        original_head = self.rev_parse("HEAD")
+        tree = self._run("write-tree").stdout.strip()
+        identity = {
+            "GIT_AUTHOR_NAME": "pubgate",
+            "GIT_AUTHOR_EMAIL": "pubgate@local",
+            "GIT_COMMITTER_NAME": "pubgate",
+            "GIT_COMMITTER_EMAIL": "pubgate@local",
+        }
+        checkout_head = self._run(
+            "commit-tree",
+            tree,
+            "-p",
+            original_head,
+            "-m",
+            "pubgate: temporary LFS checkout",
+            env=identity,
+        ).stdout.strip()
+
+        self._run("reset", "--soft", checkout_head)
+        try:
+            result = self._run("lfs", "checkout", check=False, timeout=_TIMEOUT_NETWORK)
+        finally:
+            self._run("reset", "--soft", original_head)
+
+        if result.returncode != 0:
             logger.warning("LFS checkout failed (exit %d): %s", result.returncode, result.stderr.strip())
