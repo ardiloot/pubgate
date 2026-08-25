@@ -1,12 +1,14 @@
 import logging
 import subprocess
 from pathlib import Path
+from unittest.mock import patch
 
 import pytest
 from conftest import Topology
 
 from pubgate.__main__ import build_parser, main
 from pubgate.config import Config, load_config
+from pubgate.core import PubGate
 from pubgate.errors import GitError, PubGateError
 from pubgate.git import GitRepo
 from pubgate.state import validate_state_sha
@@ -17,7 +19,10 @@ class TestCLI:
         with pytest.raises(SystemExit) as exc:
             main(["--help"])
         assert exc.value.code == 0
-        assert "pubgate" in capsys.readouterr().out
+        output = capsys.readouterr().out
+        assert "pubgate" in output
+        assert "{absorb,preview,stage,publish,status}" in output
+        assert "optional local-only stage preview" in output
 
     def test_no_command_exits_nonzero(self):
         with pytest.raises(SystemExit) as exc:
@@ -175,6 +180,97 @@ class TestRepoDirFlag:
         args = build_parser().parse_args(["absorb"])
         assert args.repo_dir == "."
 
+    def test_preview_flags(self):
+        args = build_parser().parse_args(["preview", "--output", "../preview", "--force"])
+        assert args.command == "preview"
+        assert args.output == "../preview"
+        assert args.force is True
+
+    def test_preview_output_defaults_to_none(self):
+        args = build_parser().parse_args(["preview"])
+        assert args.output is None
+
+    def test_publish_metadata_flags(self):
+        message = "Release codec 1.0\n\nCo-authored-by: Alice Public <alice@example.com>"
+        args = build_parser().parse_args(
+            [
+                "publish",
+                "--message",
+                message,
+                "--author-name",
+                "Release Bot",
+                "--author-email",
+                "release@example.com",
+            ]
+        )
+        assert args.message == message
+        assert args.author_name == "Release Bot"
+        assert args.author_email == "release@example.com"
+
+    def test_publish_requires_public_metadata(self):
+        with pytest.raises(SystemExit):
+            build_parser().parse_args(["publish"])
+
+    def test_preview_skips_public_remote_setup(self, tmp_path: Path):
+        (tmp_path / "pubgate.toml").write_text('public_url = "https://example.com/public.git"\n', encoding="utf-8")
+        output = tmp_path.parent / "preview"
+
+        with (
+            patch.object(GitRepo, "verify_repo"),
+            patch.object(GitRepo, "ensure_remote") as ensure_remote,
+            patch.object(PubGate, "preview") as preview,
+        ):
+            main(["--repo-dir", str(tmp_path), "preview", "--output", str(output)])
+
+        ensure_remote.assert_not_called()
+        preview.assert_called_once_with(output=str(output), force=False)
+
+    def test_preview_uses_sibling_default_output(self, tmp_path: Path):
+        (tmp_path / "pubgate.toml").write_text('public_url = "https://example.com/public.git"\n', encoding="utf-8")
+
+        with (
+            patch.object(GitRepo, "verify_repo"),
+            patch.object(GitRepo, "ensure_remote"),
+            patch.object(PubGate, "preview") as preview,
+        ):
+            main(["--repo-dir", str(tmp_path), "preview"])
+
+        preview.assert_called_once_with(
+            output=str(tmp_path.parent / f"{tmp_path.name}-preview"),
+            force=False,
+        )
+
+    def test_publish_routes_metadata(self, tmp_path: Path):
+        (tmp_path / "pubgate.toml").write_text('public_url = "https://example.com/public.git"\n', encoding="utf-8")
+
+        with (
+            patch.object(GitRepo, "verify_repo"),
+            patch.object(GitRepo, "ensure_remote"),
+            patch.object(PubGate, "publish") as publish,
+        ):
+            main(
+                [
+                    "--repo-dir",
+                    str(tmp_path),
+                    "publish",
+                    "--message",
+                    "Release codec 1.0\n\nCo-authored-by: Alice Public <alice@example.com>",
+                    "--author-name",
+                    "Release Bot",
+                    "--author-email",
+                    "release@example.com",
+                ]
+            )
+
+        publish.assert_called_once_with(
+            dry_run=False,
+            force=False,
+            no_pr=False,
+            message="Release codec 1.0\n\nCo-authored-by: Alice Public <alice@example.com>",
+            author_name="Release Bot",
+            author_email="release@example.com",
+        )
+
 
 class TestConfigFieldMetadata:
     def test_all_config_fields_have_kind_metadata(self):
@@ -200,7 +296,7 @@ class TestMalformedToml:
         if sys.version_info >= (3, 11):
             import tomllib
         else:
-            import tomli as tomllib  # type: ignore[import-untyped]
+            import tomli as tomllib  # ty: ignore[unresolved-import]
         (tmp_path / "pubgate.toml").write_text("key =\n", encoding="utf-8")
 
         with pytest.raises((PubGateError, tomllib.TOMLDecodeError)):

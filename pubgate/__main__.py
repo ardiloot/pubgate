@@ -13,6 +13,7 @@ logger = logging.getLogger(__name__)
 
 class Command(enum.Enum):
     ABSORB = "absorb"
+    PREVIEW = "preview"
     STAGE = "stage"
     PUBLISH = "publish"
     STATUS = "status"
@@ -37,13 +38,34 @@ def build_parser() -> argparse.ArgumentParser:
     parser.add_argument("--repo-dir", default=".", help="Path to the internal repo (default: .)")
 
     sub = parser.add_subparsers(dest="command")
-    for cmd, help_text in (
-        (Command.ABSORB.value, "Bring public repo changes into internal main via PR"),
-        (Command.STAGE.value, "Generate stage candidate and open internal PR into pubgate/public-approved"),
-        (Command.PUBLISH.value, "Push reviewed pubgate/public-approved content to the public repo and open PR"),
-    ):
-        sp = sub.add_parser(cmd, help=help_text)
-        _add_common_flags(sp)
+    absorb = sub.add_parser(Command.ABSORB.value, help="Bring public repo changes into internal main via PR")
+    _add_common_flags(absorb)
+
+    preview = sub.add_parser(
+        Command.PREVIEW.value,
+        help="Generate an optional local-only stage preview worktree for testing",
+    )
+    preview.add_argument("--output", help="Path for the linked preview worktree (default: ../<repo-name>-preview)")
+    preview.add_argument("--force", action="store_true", help="Reset and reuse an existing pubgate preview worktree")
+
+    stage = sub.add_parser(
+        Command.STAGE.value,
+        help="Generate stage candidate and open internal PR into pubgate/public-approved",
+    )
+    _add_common_flags(stage)
+
+    publish = sub.add_parser(
+        Command.PUBLISH.value,
+        help="Push reviewed pubgate/public-approved content to the public repo and open PR",
+    )
+    _add_common_flags(publish)
+    publish.add_argument(
+        "--message",
+        required=True,
+        help="Public commit message (first line becomes the PR title)",
+    )
+    publish.add_argument("--author-name", required=True, help="Public Git author and committer name")
+    publish.add_argument("--author-email", required=True, help="Public Git author and committer email")
 
     sub.add_parser(Command.STATUS.value, help="Show sync status of absorb, stage, and publish")
 
@@ -74,11 +96,16 @@ def main(argv: list[str] | None = None) -> None:
     try:
         git = GitRepo(Path(args.repo_dir))
         git.verify_repo()
-        git.ensure_remote(cfg.public_remote, cfg.public_url)
+        if cmd != Command.PREVIEW:
+            git.ensure_remote(cfg.public_remote, cfg.public_url)
         pg = PubGate(cfg, git)
 
         if cmd == Command.STATUS:
             pg.status()
+        elif cmd == Command.PREVIEW:
+            repo_root = git.repo_dir.resolve()
+            output = args.output or str(repo_root.parent / f"{repo_root.name}-preview")
+            pg.preview(output=output, force=args.force)
         else:
             flags = dict(dry_run=args.dry_run, force=args.force, no_pr=args.no_pr)
             match cmd:
@@ -87,7 +114,12 @@ def main(argv: list[str] | None = None) -> None:
                 case Command.STAGE:
                     pg.stage(**flags)
                 case Command.PUBLISH:
-                    pg.publish(**flags)
+                    pg.publish(
+                        **flags,
+                        message=args.message,
+                        author_name=args.author_name,
+                        author_email=args.author_email,
+                    )
     except PubGateError as exc:
         logger.error("Command failed: %s", exc)
         sys.exit(1)

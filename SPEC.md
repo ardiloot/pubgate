@@ -25,6 +25,7 @@ pubgate sidesteps this: staging is always a snapshot (current state, mechanicall
 ## Commands
 
 - `absorb` = bring public repo changes into internal `main` via internal PR
+- `preview` = optionally generate a local-only filtered linked worktree from a committed local `HEAD` for testing
 - `stage` = generate public stage candidate and open an internal PR into `pubgate/public-approved`
 - `publish` = push reviewed internal `pubgate/public-approved` content to a branch on the public repo and open or update a PR to public `main`
 
@@ -46,10 +47,11 @@ These states are independent and should not share meaning implicitly by branch.
 - Outbound tracking stays with the published content
 - Both state files being pushed to the public repo is acceptable (`.pubgate-absorbed` contains a public-repo commit hash, so there is no information leak)
 - Each file is included only where that tracking state is needed
+- `.pubgate-staged` identifies the internal source commit but is not an auxiliary-content digest; auxiliary-only publish readiness is determined from approved/public Git-tree differences under configured destinations
 
 ## Per-command startup
 
-Each command runs its own startup sequence before command-specific logic. `--dry-run` still runs the full startup. Stage and publish read `origin/pubgate/public-approved` (the remote tracking ref, not the local branch) to guarantee freshness after an stage PR is merged on the server.
+Each command runs its own startup sequence before command-specific logic. `--dry-run` still runs the full startup for PR commands. Preview, stage, and publish read `origin/pubgate/public-approved` (the remote tracking ref, not the local branch) to guarantee freshness after a stage PR is merged on the server.
 
 ### `absorb` startup
 
@@ -66,6 +68,15 @@ Each command runs its own startup sequence before command-specific logic. `--dry
 | `NEEDS_ABSORB` | proceed |
 | `NEEDS_BOOTSTRAP` | bootstrap |
 
+### `preview` startup
+
+1. Ensure the source worktree is clean and `HEAD` resolves to a commit
+2. Allow any branch or detached `HEAD`, including unpushed commits; do not require or update internal `main`
+3. Error when repository sparse checkout is active
+4. Fetch internal `origin` with `--prune` to read current `origin/pubgate/public-approved`; do not configure or fetch the public remote
+5. Default output to the sibling `<repo-name>-preview` directory; require the output outside the source worktree and refuse an existing path unless `--force` identifies it as this repository's locked `pubgate-preview-v1` worktree
+6. Resolve configured auxiliary sources and reject missing/unreadable sources or source/output overlap
+
 ### `stage` startup
 
 1. Ensure clean worktree - abort if uncommitted changes
@@ -73,6 +84,7 @@ Each command runs its own startup sequence before command-specific logic. `--dry
 3. Fetch `origin` (with `--prune`), verify local `main` matches `origin/main` exactly -- error if ahead, behind, or diverged
 4. Prune stale internal PR branches (`pubgate/absorb`, `pubgate/stage`): if the local branch exists but its remote counterpart on `origin` was deleted, delete the local branch
 5. Error if `main:.pubgate-absorbed` does not exist (no baseline; run `absorb` first to bootstrap)
+6. Resolve configured auxiliary sources and reject missing/unreadable sources or source/repository overlap
 
 ### `publish` startup
 
@@ -85,36 +97,60 @@ Each command runs its own startup sequence before command-specific logic. `--dry
 
 1. Run absorb startup; exit on `UP_TO_DATE`
 2. If `NEEDS_BOOTSTRAP`: record `public-remote/main HEAD` as initial baseline on a PR branch, open PR into `main`
-3. If `NEEDS_ABSORB`: determine changed files by diffing the public tree at `main:.pubgate-absorbed` against `public-remote/main`; exclude both state files (`.pubgate-absorbed`, `.pubgate-staged`) from the diff (they are sync artifacts, not external contributions)
+3. If `NEEDS_ABSORB`: determine changed files by diffing the public tree at `main:.pubgate-absorbed` against `public-remote/main`; exclude both state files and changes whose resulting path is under an auxiliary-owned destination. Report ignored auxiliary paths but do not import them. During mapping removal, ownership is the union of destinations in current config and config at the last published `.pubgate-staged` internal SHA
 4. Create or update `pubgate/absorb` from `main`
 5. Compute the inbound result, applying the per-file merge/copy/delete rules as needed, and update `.pubgate-absorbed`; deleted public files are left in place and reported for manual review in the PR; when only state files changed since last absorb, the resulting PR only updates `.pubgate-absorbed` (tracking-only)
 6. Commit the result and open or update the internal PR into `main`; the commit message lists the public commits being absorbed (safe, they are already public); internal CI must pass before merge
 
+## `preview` (local commit -> local filtered worktree) -- local only
+
+1. Run preview startup and build the stage snapshot directly from exact local `HEAD`, using the same internal filtering and auxiliary mappings as `stage`
+2. Base a detached, locked linked worktree on fetched `origin/pubgate/public-approved`; when the approved branch does not exist, use a local unreachable empty root commit
+3. Apply the snapshot with the same delete/write/stage helper as production `stage`, then set `.pubgate-staged` to local source `HEAD`
+4. Leave the candidate staged and uncommitted for `git diff --cached` comparison and manual testing
+5. Run local-only `git lfs checkout`; available objects become working files and unavailable objects remain pointers
+6. With `--force`, reuse the locked preview by cleaning non-ignored artifacts before reset, applying the new snapshot, then cleaning again under its ignore rules; build artifacts are preserved while they remain ignored
+
+Preview shortcuts only the internal local-development path through prospective `public-approved` content. It does not
+merge the source into main, open or satisfy the stage review gate, contact the public remote, or participate in
+`publish`. Its `.pubgate-staged` value is truthful inside the shared local repository but does not confer approval.
+
 ## `stage` (internal -> internal `pubgate/public-approved` review) -- semi-automated
 
 1. Run stage startup; error if `main:.pubgate-absorbed` is missing
-2. Build the stage candidate from `main` by excluding internal files that must not be published and scrubbing `BEGIN-INTERNAL`/`END-INTERNAL`. Built-in default ignore patterns cover common naming conventions (`.internal/*`, `*-internal.*`, `*.internal.*`, `*.secret`, etc.); users can override them via `ignore` in `pubgate.toml`. `.pubgate-absorbed` is included in the snapshot naturally (not excluded), and `.pubgate-staged` is set to `main` HEAD; if the result does not differ from `origin/pubgate/public-approved`, exit
+2. Build the stage candidate from `main` by excluding internal files that must not be published and scrubbing `BEGIN-INTERNAL`/`END-INTERNAL`. Add each configured live auxiliary source beneath its exclusively owned destination. Auxiliary mappings copy the full tree by default; optional include/exclude patterns reuse top-level `fnmatch` path/basename semantics, with excludes winning. Auxiliary bytes are not scrubbed. `.pubgate-absorbed` is included naturally and `.pubgate-staged` is set to `main` HEAD
 3. Create or update `pubgate/stage` from `origin/pubgate/public-approved`
-4. Commit the staged result to `pubgate/stage` and open or update the internal PR (`pubgate/stage` → `pubgate/public-approved`); the commit message lists the internal commits since the last stage (safe, stays on the internal repo, useful context for the leak reviewer); internal review here is the leak-check gate before anything is pushed to the public repo
+4. Commit the staged result to `pubgate/stage`, push any LFS objects produced by destination `.gitattributes`, and open or update the internal PR (`pubgate/stage` → `pubgate/public-approved`); the commit message lists the internal commits since the last stage (safe, stays on the internal repo, useful context for the leak reviewer); internal review here is the leak-check gate before anything is pushed to the public repo
 
 ## `publish` (internal `pubgate/public-approved` -> public repo branch -> public PR) -- semi-automated
 
 1. Run publish startup
 2. If `origin/pubgate/public-approved:.pubgate-staged` is missing → error ("run `stage` and merge the internal PR first")
-3. If `public-remote/main:.pubgate-staged` exists and equals `origin/pubgate/public-approved:.pubgate-staged` → exit (already delivered or nothing pending for public delivery)
-4. Read the absorbed baseline from `origin/pubgate/public-approved:.pubgate-absorbed`; create or update branch `pubgate/publish` based on this absorbed commit, replacing all content with the current content of `origin/pubgate/public-approved`
-5. Open or update public PR (`pubgate/publish` → `main`); public CI must pass before merge
+3. If `public-remote/main:.pubgate-staged` equals `origin/pubgate/public-approved:.pubgate-staged`, read auxiliary destinations from the staged internal commit and compare those approved/public Git subtrees; exit only when they also match
+4. Require `--author-name`, `--author-email`, and `--message`, then read the absorbed baseline from `origin/pubgate/public-approved:.pubgate-absorbed`; create or update branch `pubgate/publish` based on this absorbed commit, replacing all content with the current content of `origin/pubgate/public-approved`. Use the supplied public identity for both Git author and committer. Use the supplied message as the public commit message; its first line is the subject and the remaining body may contain standard trailers. Never fall back to internal Git configuration or generate a public message. Disable commit signing so an internal signing key cannot leak. Internal stage commits are logged for the operator but never embedded in the public commit or PR
+5. Open or update public PR (`pubgate/publish` → `main`) using the publish commit subject as the title and the remaining commit message as the body; public CI must pass before merge
 6. Done; after the public PR is merged, the user may run `absorb` so `.pubgate-absorbed` catches up to the new `public-remote/main` commit (recommended but not required before the next `stage`/`publish` cycle)
+
+## Auxiliary directories
+
+- `[[auxiliary_dirs]]` requires `source` and repository-relative `destination`; optional `include`/`exclude` string lists use the same `fnmatch` path-and-basename semantics as top-level `ignore`, with excludes winning
+- Relative sources resolve from the directory containing `pubgate.toml`; only preview/stage access live sources
+- The full source tree is selected when `include` is absent; selected regular files are copied byte-for-byte and selected symlinks or special files are rejected
+- Destinations are disjoint auxiliary-owned subtrees and may not collide with filtered internal paths
+- Destination `.gitattributes` controls LFS; pubgate does not generate attributes or auxiliary-specific LFS rules
+- Public edits under auxiliary-owned destinations are reported but excluded from absorb; removing a mapping stages deletion of its destination
+- No auxiliary state file is stored; approved/public Git-tree comparison detects auxiliary-only publish work
+- Publish, absorb, and status do not access live auxiliary sources; status cannot determine whether they differ from the approved snapshot, and stage dry-run validates/enumerates them without simulating the final Git/LFS-cleaned tree
 
 ## Core design principle: controlled divergence
 
-Without active management, internal and public repos can drift apart significantly: files diverge, patches conflict, and reconciliation becomes increasingly painful. pubgate prevents this by enforcing a single rule: **the public repo is always an exact filtered copy of internal, never an independent fork.**
+Without active management, internal and public repos can drift apart significantly: files diverge, patches conflict, and reconciliation becomes increasingly painful. pubgate controls this with one rule: **every outbound candidate is a complete reviewed snapshot of filtered internal content plus configured auxiliary data, never a history-preserving merge from internal.**
 
-Outbound snapshots are produced mechanically: ignore patterns exclude entire files, and `BEGIN-INTERNAL` / `END-INTERNAL` markers strip sections from individual files. No manual curation is involved; the same deterministic rules are applied every time. This means the public repo's content is always a predictable, reproducible function of the internal repo's content.
+Outbound snapshots are produced mechanically: ignore patterns and internal markers filter the internal tree, while configured auxiliary mappings add byte-for-byte external data under owned destinations. The public repo's content is a deterministic function of the committed internal tree plus the live auxiliary inputs reviewed by stage.
 
-When the user follows the strict `absorb → stage → publish` workflow, the public repo is always an exact filtered copy of internal. If external contributions arrive mid-cycle (between stage and publish, or before the next absorb), `stage` and `publish` no longer block. Instead, `publish` bases the public PR on the last absorbed commit. Git's three-way merge preserves external contributions or surfaces them as conflicts in the public PR. This is an acceptable trade-off: the public PR may require conflict resolution when unabsorbed changes overlap with the snapshot, but external contributions are never silently overwritten.
+When the user follows the strict `absorb → stage → publish` workflow, the public repo matches the reviewed filtered-plus-auxiliary snapshot. If external contributions arrive mid-cycle (between stage and publish, or before the next absorb), `stage` and `publish` no longer block. Instead, `publish` bases the public PR on the last absorbed commit. Git's three-way merge preserves external contributions or surfaces them as conflicts in the public PR. This is an acceptable trade-off: the public PR may require conflict resolution when unabsorbed changes overlap with the snapshot, but external contributions are never silently overwritten.
 
-The result is that divergence between the two repos is always controlled and bounded: the public repo differs from internal only by the content that was mechanically stripped, never by accumulated drift.
+The result is that divergence remains controlled and bounded: the public repository contains the reviewed filtered internal tree plus explicitly mapped auxiliary data, never accumulated untracked drift.
 
 ## Key constraints
 
@@ -124,19 +160,20 @@ The result is that divergence between the two repos is always controlled and bou
   - internal PR into `pubgate/public-approved` to catch leaks before any public push
   - public PR into `main` to run public CI before merge
 - `absorb` only modifies internal `main`
+- `preview` creates no branch or PR and never modifies `pubgate/public-approved`; its detached worktree is a local test artifact
 - `stage` is the only command that modifies internal `pubgate/public-approved`
 - `publish` only modifies public-repo-side branches/PRs
 - `main` and public `main` stay protected by their destination CI gates
 - Outbound: snapshot (no drift). Inbound: three-way merge (base from public history)
-- Outbound publication must always be a filtered snapshot, never a normal history-preserving merge, to avoid exposing internal history
+- Outbound publication must always be a reviewed filtered-plus-auxiliary snapshot, never a normal history-preserving merge, to avoid exposing internal history
 - The tool is intended to be operator-driven; CI validates the resulting PRs but does not own the sync workflow
 - Protected branches are never written directly
 - Temp branches force-updated, one PR per direction
 - Initial setup manual
-- Each command has a planning phase and an execution phase; `--dry-run` shows the planned actions without changing branches, files, or PRs (still runs the full per-command startup)
+- Each PR command has a planning phase and an execution phase; `--dry-run` shows the planned actions without changing branches, files, or PRs (still runs the full per-command startup)
 - PR creation is automatic when a supported hosting provider is detected (GitHub via the `gh` CLI, Azure DevOps via the `az` CLI). If the remote URL is not a supported provider, or the CLI is not installed/authenticated, commands log manual PR creation steps instead. Use `--no-pr` to disable automatic PR creation. Run `gh auth login` (GitHub) or `az login` (Azure DevOps) to set up authentication
-- Each command has its own startup sequence tailored to the remotes it interacts with: `absorb` fetches both remotes and verifies `main` is synced; `stage` fetches only `origin` and verifies `main` is synced; `publish` fetches both `origin` (for `origin/pubgate/public-approved`) and `public-remote` but does not require being on `main`
-- Branch guard: before creating a PR branch, each command checks whether the branch already exists. If it does (previous PR not merged), the command errors out. Use `--force` to overwrite the existing branch and proceed. After a PR is merged and the server auto-deletes the source branch, the next startup prune removes the stale local branch automatically
+- Each command has its own startup sequence tailored to the remotes it interacts with: `preview` fetches only `origin` without requiring synced `main`; `absorb` fetches both remotes and verifies `main` is synced; `stage` fetches only `origin` and verifies `main` is synced; `publish` fetches both `origin` (for `origin/pubgate/public-approved`) and `public-remote` but does not require being on `main`
+- Branch guard: before creating a PR branch, each PR command checks whether the branch already exists. If it does (previous PR not merged), the command errors out. Use `--force` to overwrite the existing branch and proceed. After a PR is merged and the server auto-deletes the source branch, the next startup prune removes the stale local branch automatically
 
 ## Known limitations
 
@@ -146,13 +183,13 @@ If the user publishes multiple times without running `absorb` between cycles, ea
 
 ### Git LFS support
 
-pubgate supports repositories that use Git LFS. LFS support is auto-detected via `git lfs version` and requires no configuration.
+pubgate supports repositories that use Git LFS and requires no auxiliary-specific LFS configuration.
 
-**How it works:** LFS-tracked files are stored as pointer files in git. pubgate reads and writes these pointers as-is; they pass through the snapshot, stage, and publish pipelines without modification. When files are staged with `git add`, git's clean/smudge filters handle the LFS encoding automatically via `.gitattributes`.
+**How it works:** Existing LFS pointer blobs pass through internal snapshot filtering unchanged. Auxiliary sources provide raw bytes; when stage runs `git add`, normal `.gitattributes` clean filters convert matching files to pointers. Preview runs `git lfs checkout` after staging so locally available objects are materialized for testing while the index retains pointers.
 
-**LFS object transfer:** pubgate runs `git lfs fetch` before file operations that need blob content (absorb, publish), skipping the fetch when there is no work to do (e.g. already up to date) or during `--dry-run`. After pushing branches, `git lfs push` transfers LFS objects to the destination remote's LFS server.
+**LFS object transfer:** pubgate runs `git lfs fetch` before file operations that need blob content (absorb, publish), skipping the fetch when there is no work to do (e.g. already up to date) or during `--dry-run`. After pushing branches, `git lfs push` transfers LFS objects to the destination remote's LFS server, including objects created while staging auxiliary files.
 
 **Limitations:**
 - **LFS files are treated as binary**: they are never merged during `absorb` (copied/overwritten instead) and never scrubbed for `BEGIN-INTERNAL`/`END-INTERNAL` markers during `stage`. Do not place internal markers inside LFS-tracked files; use ignore patterns in `pubgate.toml` to exclude sensitive LFS files from publication.
 - **`.gitattributes` is included as-is** in the public snapshot (with internal-block scrubbing if markers are present). If internal `.gitattributes` contains LFS patterns for files excluded by pubgate's ignore rules, those orphan patterns will appear in the public repo. This is harmless but may be confusing. Use `BEGIN-INTERNAL`/`END-INTERNAL` markers in `.gitattributes` to exclude internal-only LFS patterns.
-- **When LFS is not installed**, pubgate's behavior is unchanged; LFS-specific operations (fetch, push) are silently skipped.
+- **When LFS is not installed**, pointer fetch/push operations are skipped. Staging raw auxiliary files matched by an LFS filter requires Git LFS and may fail during `git add`; preview may warn when it cannot materialize pointer content.

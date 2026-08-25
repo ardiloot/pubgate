@@ -104,7 +104,7 @@ class TestStageGuards:
         topo.merge_internal_pr(topo.cfg.internal_stage_branch, topo.cfg.internal_approved_branch)
 
         # Publish delivers the restaged content
-        topo.pubgate.publish()
+        topo.publish()
 
         topo.work_dir.run("fetch", "public-remote")
         pr_ref = f"public-remote/{topo.cfg.public_publish_branch}"
@@ -227,13 +227,52 @@ class TestStageBranchGuard:
             topo.pubgate.stage()
 
     def test_force_overwrites_existing_branch(self, topo: Topology):
+        from unittest.mock import patch
+
+        from pubgate.core import PubGate
+
         topo.bootstrap_absorb()
         topo.pubgate.stage()
 
-        topo.commit_internal({"new.txt": "new\n"})
-        topo.pubgate.stage(force=True)
+        tracking_base = topo.work_dir.git.find_commit_adding("main", topo.cfg.absorb_state_file)
+        assert tracking_base is not None
+        topo.commit_internal({"new.txt": "new\n"}, "add staged feature")
+        current_source = topo.work_dir.git.rev_parse("main")
+        with patch.object(PubGate, "_handle_pr") as handle_pr:
+            topo.pubgate.stage(force=True)
         files = topo.work_dir.list_files_at_ref(topo.cfg.internal_stage_branch)
         assert "new.txt" in files
+        message = topo.work_dir.run("log", "-1", "--format=%B", topo.cfg.internal_stage_branch)
+        assert message.startswith(f"pubgate: filtered snapshot at {current_source[:7]}\n")
+        assert f"Included commits ({tracking_base[:7]}..{current_source[:7]}):" in message
+        assert "add staged feature" in message
+        assert handle_pr.call_args.kwargs["title"] == message.split("\n", 1)[0]
+        assert handle_pr.call_args.kwargs["body"] == message.split("\n", 1)[1].strip()
+
+    def test_next_stage_uses_approved_source_baseline(self, topo: Topology):
+        topo.stage_and_merge()
+        approved_source = topo.work_dir.git.rev_parse("main")
+        current_source = topo.commit_internal({"next.txt": "next\n"}, "next staged feature")
+
+        topo.pubgate.stage()
+
+        message = topo.work_dir.run("log", "-1", "--format=%B", topo.cfg.internal_stage_branch)
+        assert f"Included commits ({approved_source[:7]}..{current_source[:7]}):" in message
+        assert "next staged feature" in message
+
+    def test_rejects_source_unrelated_to_approved_source(self, topo: Topology):
+        from unittest.mock import patch
+
+        from pubgate.git import GitRepo
+
+        topo.stage_and_merge()
+        topo.commit_internal({"next.txt": "next\n"}, "next staged feature")
+
+        with (
+            patch.object(GitRepo, "is_ancestor", return_value=False),
+            pytest.raises(PubGateError, match="previous staged source.*is not an ancestor"),
+        ):
+            topo.pubgate.stage()
 
 
 class TestStageSkipsStateOnly:
@@ -293,7 +332,7 @@ class TestStageLogOnelineException:
     def test_stage_succeeds_when_log_oneline_fails(self, topo: Topology, caplog):
         from unittest.mock import patch
 
-        from pubgate.errors import PubGateError
+        from pubgate.errors import GitError
         from pubgate.git import GitRepo
 
         topo.stage_and_merge()
@@ -303,26 +342,17 @@ class TestStageLogOnelineException:
         topo.absorb_and_merge()
         topo.commit_internal({"v2.txt": "version 2\n"})
 
-        call_count = 0
-        original_log = GitRepo.log_oneline
-
         def failing_first_log(self_inner, base, head):
-            nonlocal call_count
-            call_count += 1
-            # Fail only on the first call (the pre-commit logging in stage()),
-            # let subsequent calls (e.g., commit message generation) succeed.
-            if call_count == 1:
-                raise PubGateError("simulated log failure")
-            return original_log(self_inner, base, head)
+            raise GitError(["log"], 1, "simulated log failure")
 
         with patch.object(GitRepo, "log_oneline", failing_first_log):
-            with caplog.at_level(logging.INFO, logger="pubgate"):
+            with caplog.at_level(logging.WARNING, logger="pubgate"):
                 topo.pubgate.stage(force=True)
 
         # Stage should still succeed
         files = topo.work_dir.list_files_at_ref(topo.cfg.internal_stage_branch)
         assert "v2.txt" in files
-        assert call_count >= 1
+        assert "Could not list staged commits" in caplog.text
 
 
 class TestSnapshotUnreadableFile:
@@ -334,19 +364,38 @@ class TestSnapshotUnreadableFile:
         topo.bootstrap_absorb()
         topo.commit_internal({"normal.txt": "ok\n", "broken.txt": "will-be-unreadable\n"})
 
-        original_read = GitRepo.read_file_auto
+        tree_blobs = topo.work_dir.git.ls_tree_blob_ids("main")
+        broken_id = tree_blobs["broken.txt"]
+        original_read = GitRepo.read_blobs_auto
 
-        def selective_read(self_inner, ref, path):
-            if path == "broken.txt":
-                return None
-            return original_read(self_inner, ref, path)
+        def selective_read(self_inner, object_ids):
+            contents = original_read(self_inner, object_ids)
+            return [None if object_id == broken_id else content for object_id, content in zip(object_ids, contents)]
 
-        with patch.object(GitRepo, "read_file_auto", selective_read):
+        with patch.object(GitRepo, "read_blobs_auto", selective_read):
             topo.pubgate.stage()
 
         files = topo.work_dir.list_files_at_ref(topo.cfg.internal_stage_branch)
         assert "normal.txt" in files
         assert "broken.txt" not in files
+
+
+class TestApplyStageSnapshot:
+    def test_batches_literal_paths_and_deletions(self, topo: Topology):
+        from pubgate.stage_snapshot import apply_stage_snapshot
+
+        topo.work_dir.commit_files({"delete me.txt": "old\n"}, "add deleted file")
+        snapshot = {
+            "[draft].txt": "new\n",
+            "space name.bin": b"\x00data",
+        }
+
+        apply_stage_snapshot(topo.work_dir.git, snapshot, ".pubgate-staged", "source-head\n")
+        topo.work_dir.git.commit("apply snapshot")
+
+        assert set(topo.work_dir.list_files_at_ref("HEAD")) == {*snapshot, ".pubgate-staged"}
+        assert topo.work_dir.read_file_at_ref("HEAD", "[draft].txt") == "new\n"
+        assert topo.work_dir.git.read_file_at_ref_bytes("HEAD", "space name.bin") == b"\x00data"
 
 
 class TestEnsurePublicBranchCleanup:

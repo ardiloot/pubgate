@@ -203,7 +203,7 @@ class TestHandlePrProviderError:
             mock_provider = mock_detect.return_value
             mock_provider.create_or_update_pr.side_effect = RuntimeError("gh network timeout")
 
-            topo.pubgate.publish()
+            topo.publish()
 
         assert "Automatic PR creation failed" in caplog.text
         assert "gh network timeout" in caplog.text
@@ -219,12 +219,13 @@ class TestHandlePrProviderError:
 class TestDryRunPrMessages:
     def test_dry_run_with_provider_shows_automatic(self, topo: Topology, caplog):
         topo.stage_and_merge()
+        caplog.clear()
         with (
             patch("pubgate.core.detect_provider") as mock_detect,
             caplog.at_level(logging.INFO),
         ):
             mock_detect.return_value = object()  # non-None → provider available
-            topo.pubgate.publish(dry_run=True)
+            topo.publish(dry_run=True)
 
         assert "Would create/update PR" in caplog.text
         assert "Review and merge the PR" in caplog.text
@@ -234,7 +235,7 @@ class TestDryRunPrMessages:
     def test_dry_run_without_provider_shows_manual(self, topo: Topology, caplog):
         topo.stage_and_merge()
         with caplog.at_level(logging.INFO):
-            topo.pubgate.publish(dry_run=True)
+            topo.publish(dry_run=True)
 
         assert "Next steps:" in caplog.text
         assert "Create PR" in caplog.text
@@ -249,7 +250,7 @@ class TestNoPrFlag:
     def test_no_pr_shows_manual_steps(self, topo: Topology, caplog):
         topo.stage_and_merge()
         with caplog.at_level(logging.INFO):
-            topo.pubgate.publish(no_pr=True)
+            topo.publish(no_pr=True)
         assert "Create PR" in caplog.text
         assert "Next steps:" in caplog.text
 
@@ -257,7 +258,7 @@ class TestNoPrFlag:
         # topo uses local file paths as remotes, which are not GitHub
         topo.stage_and_merge()
         with caplog.at_level(logging.INFO):
-            topo.pubgate.publish()
+            topo.publish()
         assert "Create PR" in caplog.text
         assert "Next steps:" in caplog.text
 
@@ -278,7 +279,18 @@ class TestNoPrCLIFlag:
         from pubgate.__main__ import build_parser
 
         parser = build_parser()
-        args = parser.parse_args(["publish", "--no-pr"])
+        args = parser.parse_args(
+            [
+                "publish",
+                "--no-pr",
+                "--message",
+                "Release",
+                "--author-name",
+                "Release Bot",
+                "--author-email",
+                "release@example.com",
+            ]
+        )
         assert args.no_pr is True
 
     def test_parser_default_no_pr_is_false(self):
@@ -292,7 +304,7 @@ class TestNoPrCLIFlag:
         from pubgate.__main__ import build_parser
 
         parser = build_parser()
-        for cmd in ("absorb", "stage", "publish"):
+        for cmd in ("absorb", "stage"):
             args = parser.parse_args([cmd, "--no-pr"])
             assert args.no_pr is True, f"--no-pr not accepted for {cmd}"
 

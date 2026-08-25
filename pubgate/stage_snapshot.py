@@ -1,11 +1,17 @@
 import logging
+from collections.abc import Sequence
 
+from .auxiliary import AuxiliaryFile, copy_auxiliary_files
 from .config import Config
 from .errors import PubGateError
-from .filtering import check_conflict_markers, check_residual_markers, is_ignored, scrub_internal_blocks
+from .filtering import (
+    check_conflict_markers,
+    check_residual_markers,
+    is_ignored,
+    scrub_internal_blocks,
+)
 from .git import GitRepo, is_lfs_pointer
-from .models import format_commit
-from .state import StateRef
+from .models import CommitInfo, format_commit
 
 logger = logging.getLogger(__name__)
 
@@ -16,22 +22,24 @@ def build_stage_snapshot(
     ignore_patterns: list[str],
     excluded: frozenset[str],
 ) -> tuple[dict[str, str | bytes], int]:
-    all_files = git.ls_tree(ref)
+    tree_blobs = git.ls_tree_blob_ids(ref)
     snapshot: dict[str, str | bytes] = {}
     lfs_files: list[str] = []
+    included: list[str] = []
 
-    for path in all_files:
+    for path in tree_blobs:
         if path in excluded:
             logger.debug("Excluded: %s", path)
             continue
         if is_ignored(path, ignore_patterns):
             logger.debug("Ignored: %s", path)
             continue
+        included.append(path)
 
-        content = git.read_file_auto(ref, path)
+    contents = git.read_blobs_auto([tree_blobs[path] for path in included])
+    for path, content in zip(included, contents, strict=True):
         if content is None:
             continue
-
         if isinstance(content, bytes):
             snapshot[path] = content
         elif is_lfs_pointer(content):
@@ -40,7 +48,10 @@ def build_stage_snapshot(
             snapshot[path] = content
         else:
             try:
-                content = scrub_internal_blocks(content, path=path)
+                scrubbed = scrub_internal_blocks(content, path=path)
+                if scrubbed != content:
+                    logger.debug("Scrubbed internal sections: %s", path)
+                content = scrubbed
                 check_residual_markers(content, path)
                 check_conflict_markers(content, path)
             except ValueError as exc:
@@ -51,6 +62,33 @@ def build_stage_snapshot(
         logger.debug("  LFS: %s", path)
     logger.debug("Snapshot contains %d files", len(snapshot))
     return snapshot, len(lfs_files)
+
+
+def apply_stage_snapshot(
+    git: GitRepo,
+    snapshot: dict[str, str | bytes],
+    stage_state_file: str,
+    stage_state_content: str,
+    auxiliary_files: Sequence[AuxiliaryFile] = (),
+) -> None:
+    existing = git.ls_tree("HEAD")
+    desired = set(snapshot) | {file.destination_path for file in auxiliary_files}
+    changed: list[str] = []
+    for path in existing:
+        if path not in desired and path != stage_state_file:
+            git.remove_file(path)
+            changed.append(path)
+
+    for path, content in sorted(snapshot.items()):
+        git.write_file_auto(path, content)
+        changed.append(path)
+
+    copy_auxiliary_files(git.repo_dir, auxiliary_files)
+    changed.extend(file.destination_path for file in auxiliary_files)
+
+    git.write_file_auto(stage_state_file, stage_state_content)
+    changed.append(stage_state_file)
+    git.stage_paths(changed)
 
 
 def snapshot_unchanged_ref(
@@ -68,37 +106,31 @@ def snapshot_unchanged_ref(
         logger.debug("No previous snapshot to compare against")
         return "(empty)" if not snapshot else None
 
-    prev_files = set(git.ls_tree(compare_ref)) - cfg.state_files
+    previous_blobs = git.ls_tree_blob_ids(compare_ref)
+    prev_files = set(previous_blobs) - cfg.state_files
     new_files = set(snapshot.keys()) - cfg.state_files
     if prev_files != new_files:
         return None
 
-    for path in new_files:
+    paths = sorted(new_files)
+    previous_contents = git.read_blobs_auto([previous_blobs[path] for path in paths])
+    for path, old_content in zip(paths, previous_contents, strict=True):
         new_content = snapshot[path]
-        old_content = git.read_file_auto(compare_ref, path)
         if old_content != new_content:
             return None
     return compare_ref
 
 
 def stage_commit_message(
-    git: GitRepo,
-    cfg: Config,
     main_head: str,
-    origin_preview_ref: str,
+    previous_stage_sha: str | None,
+    commits: list[CommitInfo],
 ) -> str:
-    subject = f"pubgate: stage from main {main_head[:7]}"
-    try:
-        prev_ref = StateRef.read(git, origin_preview_ref, cfg.stage_state_file)
-    except PubGateError:
-        return subject
-    if prev_ref is None:
-        return subject
-    commits = git.log_oneline(prev_ref.sha, main_head)
-    if not commits:
+    subject = f"pubgate: filtered snapshot at {main_head[:7]}"
+    if previous_stage_sha is None or not commits:
         return subject
     lines = [subject, ""]
-    lines.append(f"Included commits ({prev_ref.sha[:7]}..{main_head[:7]}):")
+    lines.append(f"Included commits ({previous_stage_sha[:7]}..{main_head[:7]}):")
     lines.extend(f"  {i}. {format_commit(c)}" for i, c in enumerate(commits, 1))
     return "\n".join(lines)
 

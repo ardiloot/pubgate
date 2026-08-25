@@ -1,7 +1,9 @@
 import logging
+import os
 import subprocess
-from collections.abc import Iterator
+from collections.abc import Iterator, Mapping
 from contextlib import contextmanager
+from dataclasses import dataclass
 from pathlib import Path
 
 from .errors import GitError, PubGateError
@@ -15,6 +17,12 @@ _TIMEOUT_NETWORK = 300
 
 _LFS_POINTER_PREFIX = b"version https://git-lfs.github.com/spec/v1\n"
 _LFS_POINTER_MAX_LEN = 512
+
+
+@dataclass(frozen=True, slots=True)
+class WorktreeInfo:
+    path: Path
+    lock_reason: str | None
 
 
 def is_lfs_pointer(data: str | bytes) -> bool:
@@ -41,11 +49,21 @@ class GitRepo:
         *args: str,
         check: bool = True,
         timeout: int = _TIMEOUT_LOCAL,
+        env: Mapping[str, str] | None = None,
+        input_text: str | None = None,
     ) -> subprocess.CompletedProcess[str]:
         cmd = ["git", "-C", str(self.repo_dir), *args]
         logger.debug("git %s", " ".join(args))
+        process_env = None if env is None else {**os.environ, **env}
         try:
-            result = subprocess.run(cmd, capture_output=True, text=True, timeout=timeout)  # noqa: S603
+            result = subprocess.run(  # noqa: S603
+                cmd,
+                capture_output=True,
+                text=True,
+                timeout=timeout,
+                env=process_env,
+                input=input_text,
+            )
         except subprocess.TimeoutExpired as exc:
             raise GitError(list(args), -1, f"timed out after {timeout}s") from exc
         logger.debug("git exit=%d", result.returncode)
@@ -60,11 +78,12 @@ class GitRepo:
         *args: str,
         check: bool = True,
         timeout: int = _TIMEOUT_LOCAL,
+        input_bytes: bytes | None = None,
     ) -> subprocess.CompletedProcess[bytes]:
         cmd = ["git", "-C", str(self.repo_dir), *args]
         logger.debug("git %s", " ".join(args))
         try:
-            result = subprocess.run(cmd, capture_output=True, timeout=timeout)  # noqa: S603
+            result = subprocess.run(cmd, capture_output=True, timeout=timeout, input=input_bytes)  # noqa: S603
         except subprocess.TimeoutExpired as exc:
             raise GitError(list(args), -1, f"timed out after {timeout}s") from exc
         logger.debug("git exit=%d", result.returncode)
@@ -169,6 +188,77 @@ class GitRepo:
         return result.returncode == 0
 
     # ------------------------------------------------------------------
+    # Linked worktrees
+    # ------------------------------------------------------------------
+
+    def list_worktrees(self) -> list[WorktreeInfo]:
+        result = self._run_bytes("worktree", "list", "--porcelain", "-z", check=False)
+        separator = b"\x00"
+        if result.returncode == 129:
+            logger.debug("NUL-delimited worktree output unavailable; using newline-delimited porcelain output")
+            result = self._run_bytes("worktree", "list", "--porcelain")
+            separator = b"\n"
+        elif result.returncode != 0:
+            raise GitError(
+                ["worktree", "list", "--porcelain", "-z"],
+                result.returncode,
+                result.stderr.decode(errors="replace").strip(),
+            )
+
+        worktrees: list[WorktreeInfo] = []
+        record: dict[str, str] = {}
+
+        for field_bytes in result.stdout.split(separator):
+            if not field_bytes:
+                if "worktree" in record:
+                    worktrees.append(
+                        WorktreeInfo(
+                            path=Path(record["worktree"]),
+                            lock_reason=record.get("locked"),
+                        )
+                    )
+                record = {}
+                continue
+
+            field = field_bytes.decode("utf-8", errors="surrogateescape")
+            key, separator, value = field.partition(" ")
+            record[key] = value if separator else ""
+
+        return worktrees
+
+    def find_worktree(self, path: Path) -> WorktreeInfo | None:
+        target = path.resolve()
+        for worktree in self.list_worktrees():
+            if worktree.path.resolve() == target:
+                return worktree
+        return None
+
+    def add_locked_worktree(self, path: Path, start_point: str, lock_reason: str) -> None:
+        path.parent.mkdir(parents=True, exist_ok=True)
+        self._run(
+            "worktree",
+            "add",
+            "--detach",
+            "--lock",
+            "--reason",
+            lock_reason,
+            str(path),
+            start_point,
+            env={"GIT_LFS_SKIP_SMUDGE": "1"},
+        )
+
+    def remove_locked_worktree(self, path: Path) -> None:
+        self._run("worktree", "unlock", str(path))
+        self._run("worktree", "remove", "--force", str(path))
+
+    def reset_hard(self, ref: str, *, skip_lfs_smudge: bool = False) -> None:
+        env = {"GIT_LFS_SKIP_SMUDGE": "1"} if skip_lfs_smudge else None
+        self._run("reset", "--hard", ref, env=env)
+
+    def clean_untracked(self) -> None:
+        self._run("clean", "-ffd")
+
+    # ------------------------------------------------------------------
     # Checkout operations
     # ------------------------------------------------------------------
 
@@ -215,12 +305,24 @@ class GitRepo:
         if result.stdout.strip():
             raise PubGateError("Error: working tree is not clean. Commit or stash changes first.")
 
+    def status_porcelain(self) -> list[str]:
+        result = self._run("status", "--porcelain")
+        return result.stdout.splitlines()
+
+    def is_sparse_checkout_enabled(self) -> bool:
+        result = self._run("config", "--bool", "--get", "core.sparseCheckout", check=False)
+        return result.returncode == 0 and result.stdout.strip() == "true"
+
     # ------------------------------------------------------------------
     # Ref & commit history
     # ------------------------------------------------------------------
 
     def rev_parse(self, ref: str) -> str:
         return self._run("rev-parse", ref).stdout.strip()
+
+    def try_rev_parse(self, ref: str) -> str | None:
+        result = self._run("rev-parse", "--verify", ref, check=False)
+        return result.stdout.strip() if result.returncode == 0 else None
 
     def rev_list(self, base: str, head: str, *, first_parent: bool = False) -> list[str]:
         args = ["rev-list"]
@@ -255,6 +357,20 @@ class GitRepo:
         first_line = result.stdout.strip().split("\n", 1)[0]
         return first_line if first_line else None
 
+    def find_commit_adding(self, head: str, path: str) -> str | None:
+        result = self._run(
+            "log",
+            "--first-parent",
+            "--reverse",
+            "--diff-filter=A",
+            "--format=%H",
+            head,
+            "--",
+            path,
+        )
+        first_line = result.stdout.strip().split("\n", 1)[0]
+        return first_line if first_line else None
+
     def changed_files_in_commit(self, sha: str) -> list[str]:
         result = self._run("diff-tree", "--no-commit-id", "-r", "--name-only", f"{sha}~1", sha)
         return [f for f in result.stdout.strip().splitlines() if f]
@@ -266,6 +382,54 @@ class GitRepo:
     def ls_tree(self, ref: str) -> list[str]:
         result = self._run_bytes("ls-tree", "-r", "--name-only", "-z", ref)
         return [p.decode("utf-8", errors="surrogateescape") for p in result.stdout.split(b"\x00") if p]
+
+    def ls_tree_blob_ids(self, ref: str) -> dict[str, str]:
+        result = self._run_bytes("ls-tree", "-r", "-z", ref)
+        entries: dict[str, str] = {}
+        for raw_entry in result.stdout.split(b"\x00"):
+            if not raw_entry:
+                continue
+            metadata, raw_path = raw_entry.split(b"\t", 1)
+            _mode, object_type, object_id = metadata.split(b" ", 2)
+            if object_type == b"blob":
+                path = raw_path.decode("utf-8", errors="surrogateescape")
+                entries[path] = object_id.decode("ascii")
+        return entries
+
+    def read_blobs_auto(self, object_ids: list[str]) -> list[str | bytes | None]:
+        if not object_ids:
+            return []
+
+        request = "".join(f"{object_id}\n" for object_id in object_ids).encode("ascii")
+        result = self._run_bytes("cat-file", "--batch", input_bytes=request)
+        values: list[str | bytes | None] = []
+        offset = 0
+
+        for expected_id in object_ids:
+            header_end = result.stdout.find(b"\n", offset)
+            if header_end < 0:
+                raise GitError(["cat-file", "--batch"], 1, "truncated batch header")
+            header = result.stdout[offset:header_end].split()
+            if len(header) == 2 and header[0].decode("ascii") == expected_id and header[1] == b"missing":
+                values.append(None)
+                offset = header_end + 1
+                continue
+            if len(header) != 3 or header[0].decode("ascii") != expected_id or header[1] != b"blob":
+                raise GitError(["cat-file", "--batch"], 1, f"unexpected batch header: {header!r}")
+
+            size = int(header[2])
+            content_start = header_end + 1
+            content_end = content_start + size
+            if content_end >= len(result.stdout) or result.stdout[content_end : content_end + 1] != b"\n":
+                raise GitError(["cat-file", "--batch"], 1, "truncated batch content")
+            data = result.stdout[content_start:content_end]
+            offset = content_end + 1
+            try:
+                values.append(data.decode("utf-8"))
+            except (UnicodeDecodeError, ValueError):
+                values.append(data)
+
+        return values
 
     def diff_tree(self, ref_a: str, ref_b: str) -> list[FileChange]:
         result = self._run_bytes("diff-tree", "-r", "--no-commit-id", "--name-status", "-z", ref_a, ref_b)
@@ -362,6 +526,32 @@ class GitRepo:
     def stage(self, path: str) -> None:
         self._run("add", path)
 
+    def stage_paths(self, paths: list[str]) -> None:
+        if not paths:
+            return
+        pathspec = b"\x00".join(path.encode("utf-8", errors="surrogateescape") for path in paths) + b"\x00"
+        self._run_bytes(
+            "--literal-pathspecs",
+            "add",
+            "-A",
+            "--pathspec-from-file=-",
+            "--pathspec-file-nul",
+            input_bytes=pathspec,
+        )
+
+    def write_file_auto(self, path: str, content: str | bytes) -> None:
+        full_path = self.repo_dir / path
+        full_path.parent.mkdir(parents=True, exist_ok=True)
+        if isinstance(content, bytes):
+            full_path.write_bytes(content)
+        else:
+            full_path.write_text(content, encoding="utf-8", newline="")
+
+    def remove_file(self, path: str) -> None:
+        full_path = self.repo_dir / path
+        if full_path.exists() or full_path.is_symlink():
+            full_path.unlink()
+
     def write_file_and_stage(self, repo_relative_path: str, content: str) -> None:
         full_path = self.repo_dir / repo_relative_path
         full_path.parent.mkdir(parents=True, exist_ok=True)
@@ -381,9 +571,7 @@ class GitRepo:
             self.write_file_and_stage(path, content)
 
     def remove_file_and_stage(self, repo_relative_path: str) -> None:
-        full_path = self.repo_dir / repo_relative_path
-        if full_path.exists():
-            full_path.unlink()
+        self.remove_file(repo_relative_path)
         self._run("rm", "--cached", "--ignore-unmatch", repo_relative_path)
 
     def rm_all_tracked(self) -> None:
@@ -406,9 +594,29 @@ class GitRepo:
         self._run("commit", "--no-verify", "-m", message)
         return self.rev_parse("HEAD")
 
+    def commit_with_identity(self, message: str, name: str, email: str) -> str:
+        identity = {
+            "GIT_AUTHOR_NAME": name,
+            "GIT_AUTHOR_EMAIL": email,
+            "GIT_COMMITTER_NAME": name,
+            "GIT_COMMITTER_EMAIL": email,
+        }
+        self._run("commit", "--no-verify", "--no-gpg-sign", "--cleanup=verbatim", "-m", message, env=identity)
+        return self.rev_parse("HEAD")
+
     def commit_allow_empty(self, message: str) -> str:
         self._run("commit", "--allow-empty", "--no-verify", "-m", message)
         return self.rev_parse("HEAD")
+
+    def create_empty_root_commit(self, message: str) -> str:
+        tree = self._run("mktree", input_text="").stdout.strip()
+        identity = {
+            "GIT_AUTHOR_NAME": "pubgate",
+            "GIT_AUTHOR_EMAIL": "pubgate@local",
+            "GIT_COMMITTER_NAME": "pubgate",
+            "GIT_COMMITTER_EMAIL": "pubgate@local",
+        }
+        return self._run("commit-tree", tree, "-m", message, env=identity).stdout.strip()
 
     # ------------------------------------------------------------------
     # Merging
@@ -459,3 +667,35 @@ class GitRepo:
             return
         if result.returncode != 0:
             logger.warning("LFS push failed (exit %d): %s", result.returncode, result.stderr.strip())
+
+    def lfs_checkout(self) -> None:
+        if not self.is_lfs_available():
+            return
+
+        # Git LFS scans HEAD rather than the index, so expose the staged preview tree temporarily.
+        original_head = self.rev_parse("HEAD")
+        tree = self._run("write-tree").stdout.strip()
+        identity = {
+            "GIT_AUTHOR_NAME": "pubgate",
+            "GIT_AUTHOR_EMAIL": "pubgate@local",
+            "GIT_COMMITTER_NAME": "pubgate",
+            "GIT_COMMITTER_EMAIL": "pubgate@local",
+        }
+        checkout_head = self._run(
+            "commit-tree",
+            tree,
+            "-p",
+            original_head,
+            "-m",
+            "pubgate: temporary LFS checkout",
+            env=identity,
+        ).stdout.strip()
+
+        self._run("reset", "--soft", checkout_head)
+        try:
+            result = self._run("lfs", "checkout", check=False, timeout=_TIMEOUT_NETWORK)
+        finally:
+            self._run("reset", "--soft", original_head)
+
+        if result.returncode != 0:
+            logger.warning("LFS checkout failed (exit %d): %s", result.returncode, result.stderr.strip())

@@ -233,8 +233,18 @@ class Topology:
         self.merge_internal_pr(self.cfg.internal_stage_branch, self.cfg.internal_approved_branch)
         self.work_dir.run("checkout", "main")
 
+    def publish(self, *, dry_run: bool = False, force: bool = False, no_pr: bool = False) -> None:
+        self.pubgate.publish(
+            message="Test public release",
+            author_name="Public Test User",
+            author_email="public-test@example.com",
+            dry_run=dry_run,
+            force=force,
+            no_pr=no_pr,
+        )
+
     def publish_and_merge(self) -> None:
-        self.pubgate.publish()
+        self.publish()
         self.work_dir.run("fetch", "public-remote")
         self.merge_public_pr(self.cfg.public_publish_branch, self.cfg.public_main_branch)
         self.work_dir.run("checkout", "main")

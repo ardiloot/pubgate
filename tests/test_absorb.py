@@ -1,8 +1,10 @@
 import logging
+from unittest.mock import patch
 
 import pytest
 from conftest import SAMPLE_LATIN1, SAMPLE_PNG, Topology
 
+from pubgate.core import PubGate
 from pubgate.errors import PubGateError
 from pubgate.git import GitRepo
 
@@ -116,6 +118,7 @@ class TestAbsorbChanges:
         topo.work_dir.push("origin", "main")
         topo.do_full_publish_cycle()
         # Absorb: file is gone on both sides, should not warn
+        caplog.clear()
         with caplog.at_level(logging.INFO, logger="pubgate"):
             topo.pubgate.absorb()
         assert "doomed.txt" not in caplog.text
@@ -160,7 +163,7 @@ class TestAbsorbMerge:
         topo.setup_baseline("public-file.txt", "original line\n")
         topo.commit_internal({"public-file.txt": "internal version\n"})
         topo.commit_to_public({"public-file.txt": "public version\n"})
-        with caplog.at_level(logging.INFO, logger="pubgate"):
+        with patch.object(PubGate, "_handle_pr") as handle_pr, caplog.at_level(logging.INFO, logger="pubgate"):
             topo.pubgate.absorb()
         assert "CONFLICTS" in caplog.text
 
@@ -176,6 +179,8 @@ class TestAbsorbMerge:
         commit_msg = topo.work_dir.run("log", "-1", "--format=%B", topo.cfg.internal_absorb_branch).strip()
         assert "CONFLICTS" in commit_msg
         assert "public-file.txt" in commit_msg
+        assert handle_pr.call_args.kwargs["title"] == commit_msg.split("\n", 1)[0]
+        assert handle_pr.call_args.kwargs["body"] == commit_msg.split("\n", 1)[1].strip()
 
     def test_sequential_merges_use_correct_base(self, topo: Topology):
         topo.bootstrap_absorb()
