@@ -118,6 +118,7 @@ class TestAbsorbChanges:
         topo.work_dir.push("origin", "main")
         topo.do_full_publish_cycle()
         # Absorb: file is gone on both sides, should not warn
+        caplog.clear()
         with caplog.at_level(logging.INFO, logger="pubgate"):
             topo.pubgate.absorb()
         assert "doomed.txt" not in caplog.text
