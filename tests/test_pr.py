@@ -219,6 +219,7 @@ class TestHandlePrProviderError:
 class TestDryRunPrMessages:
     def test_dry_run_with_provider_shows_automatic(self, topo: Topology, caplog):
         topo.stage_and_merge()
+        caplog.clear()
         with (
             patch("pubgate.core.detect_provider") as mock_detect,
             caplog.at_level(logging.INFO),
