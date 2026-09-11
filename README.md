@@ -208,14 +208,14 @@ These options come after the command.
 
 ### Publish options
 
-All three options are required, including with `--dry-run`. pubgate never falls back to the internal repository's Git
+`--author` and `--message` are required, including with `--dry-run`. pubgate never falls back to the internal repository's Git
 identity or generates a public commit message. Public commits are left unsigned so an internal signing key cannot leak.
 
 | Option | Description |
 |--------|-------------|
-| `--author-name NAME` | Public Git author name. Also used as the committer name so the internal identity cannot leak. |
-| `--author-email EMAIL` | Public Git author email. Also used as the committer email. |
-| `--message MESSAGE` | Public commit message. The first line becomes the PR title; the remaining body may contain standard trailers such as `Co-authored-by: Name <email>`. The shell must pass multiline text as one argument. |
+| `--author "Name <email>"` | Required public Git identity. Used for both author and committer so the internal identity cannot leak. |
+| `--message MESSAGE` | Required public commit message. The first line becomes the PR title; the remaining body becomes the PR description, including co-author trailers. |
+| `--co-author "Name <email>"` | Optional co-author. Repeat for multiple contributors; adds `Co-authored-by` trailers automatically. |
 
 ## Configuration
 
@@ -328,7 +328,7 @@ pubgate stage
 # → Review for leaks, merge it
 
 # 5. Publish to public repo with explicit public metadata
-pubgate publish --author-name "Release Bot" --author-email "release@example.com" --message "Initial public release"
+pubgate publish --author "Release Bot <release@example.com>" --message "Initial public release"
 # Output: pushes pubgate/publish to the public remote
 # → PR: pubgate/publish → main on the public repo (auto-created on GitHub/Azure DevOps)
 # → Merge after CI passes

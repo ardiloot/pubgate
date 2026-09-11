@@ -60,12 +60,21 @@ def build_parser() -> argparse.ArgumentParser:
     )
     _add_common_flags(publish)
     publish.add_argument(
+        "--author", required=True, metavar="NAME <EMAIL>", help="Public Git author and committer identity"
+    )
+    publish.add_argument(
         "--message",
         required=True,
         help="Public commit message (first line becomes the PR title)",
     )
-    publish.add_argument("--author-name", required=True, help="Public Git author and committer name")
-    publish.add_argument("--author-email", required=True, help="Public Git author and committer email")
+    publish.add_argument(
+        "--co-author",
+        dest="co_authors",
+        action="append",
+        default=[],
+        metavar="NAME <EMAIL>",
+        help="Public co-author identity; repeat to credit multiple contributors",
+    )
 
     sub.add_parser(Command.STATUS.value, help="Show sync status of absorb, stage, and publish")
 
@@ -115,10 +124,10 @@ def main(argv: list[str] | None = None) -> None:
                     pg.stage(**flags)
                 case Command.PUBLISH:
                     pg.publish(
-                        **flags,
+                        author=args.author,
                         message=args.message,
-                        author_name=args.author_name,
-                        author_email=args.author_email,
+                        co_authors=args.co_authors,
+                        **flags,
                     )
     except PubGateError as exc:
         logger.error("Command failed: %s", exc)

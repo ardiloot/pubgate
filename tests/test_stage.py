@@ -24,10 +24,20 @@ class TestStageConflictMarkers:
 
 
 class TestStageBasic:
-    def test_stage_creates_correct_snapshot(self, topo: Topology):
+    @pytest.mark.parametrize("commit_count", [0, 3])
+    def test_stage_creates_correct_snapshot(self, topo: Topology, caplog, commit_count: int):
         topo.bootstrap_absorb()
+        for index in range(commit_count):
+            topo.commit_internal({f"feature-{index}.txt": "feature\n"}, f"add feature {index}")
+        current_source = topo.work_dir.git.rev_parse("main")
         assert not topo.work_dir.git.branch_exists(topo.cfg.internal_approved_branch)
-        topo.pubgate.stage()
+        with caplog.at_level(logging.INFO, logger="pubgate"):
+            topo.pubgate.stage()
+
+        assert f"Staging initial filtered snapshot of main at {current_source[:7]}" in caplog.text
+        assert "No previous approved staging checkpoint" in caplog.text
+        assert "Includes all eligible source files and configured auxiliary data" in caplog.text
+        assert "Internal commits since previous approved snapshot" not in caplog.text
 
         assert topo.work_dir.git.branch_exists(topo.cfg.internal_stage_branch)
         assert topo.work_dir.git.branch_exists(topo.cfg.internal_approved_branch)
@@ -43,7 +53,14 @@ class TestStageBasic:
 
         state = topo.work_dir.read_file_at_ref(topo.cfg.internal_stage_branch, topo.cfg.stage_state_file)
         assert state is not None
-        assert state.strip() == topo.work_dir.git.rev_parse("main")
+        assert state.strip() == current_source
+
+        message = topo.work_dir.run("log", "-1", "--format=%B", topo.cfg.internal_stage_branch)
+        assert message.strip() == (
+            f"pubgate: stage initial filtered snapshot at {current_source[:7]}\n\n"
+            "Includes all eligible source files and configured auxiliary data.\n"
+            "No previous approved staging checkpoint exists."
+        )
 
 
 class TestStageIdempotent:
@@ -114,11 +131,19 @@ class TestStageGuards:
 
 
 class TestStageDryRun:
-    def test_dry_run_previews_without_side_effects(self, topo: Topology, caplog):
+    @pytest.mark.parametrize("commit_count", [0, 3])
+    def test_dry_run_previews_without_side_effects(self, topo: Topology, caplog, commit_count: int):
         topo.bootstrap_absorb()
+        for index in range(commit_count):
+            topo.commit_internal({f"feature-{index}.txt": "feature\n"}, f"add feature {index}")
+        current_source = topo.work_dir.git.rev_parse("main")
         assert not topo.work_dir.git.branch_exists(topo.cfg.internal_approved_branch)
         with caplog.at_level(logging.INFO, logger="pubgate"):
             topo.pubgate.stage(dry_run=True)
+        assert f"Staging initial filtered snapshot of main at {current_source[:7]}" in caplog.text
+        assert "No previous approved staging checkpoint" in caplog.text
+        assert "Includes all eligible source files and configured auxiliary data" in caplog.text
+        assert "Internal commits since previous approved snapshot" not in caplog.text
         assert "[dry-run] Would commit on" in caplog.text
         assert "[dry-run] Would push" in caplog.text
         assert "Next steps" in caplog.text
@@ -234,8 +259,6 @@ class TestStageBranchGuard:
         topo.bootstrap_absorb()
         topo.pubgate.stage()
 
-        tracking_base = topo.work_dir.git.find_commit_adding("main", topo.cfg.absorb_state_file)
-        assert tracking_base is not None
         topo.commit_internal({"new.txt": "new\n"}, "add staged feature")
         current_source = topo.work_dir.git.rev_parse("main")
         with patch.object(PubGate, "_handle_pr") as handle_pr:
@@ -243,22 +266,44 @@ class TestStageBranchGuard:
         files = topo.work_dir.list_files_at_ref(topo.cfg.internal_stage_branch)
         assert "new.txt" in files
         message = topo.work_dir.run("log", "-1", "--format=%B", topo.cfg.internal_stage_branch)
-        assert message.startswith(f"pubgate: filtered snapshot at {current_source[:7]}\n")
-        assert f"Included commits ({tracking_base[:7]}..{current_source[:7]}):" in message
-        assert "add staged feature" in message
+        assert message.strip() == (
+            f"pubgate: stage initial filtered snapshot at {current_source[:7]}\n\n"
+            "Includes all eligible source files and configured auxiliary data.\n"
+            "No previous approved staging checkpoint exists."
+        )
         assert handle_pr.call_args.kwargs["title"] == message.split("\n", 1)[0]
         assert handle_pr.call_args.kwargs["body"] == message.split("\n", 1)[1].strip()
 
-    def test_next_stage_uses_approved_source_baseline(self, topo: Topology):
+    @pytest.mark.parametrize("commit_count", [1, 3])
+    def test_next_stage_uses_approved_source_baseline(self, topo: Topology, caplog, commit_count: int):
+        from unittest.mock import patch
+
+        from pubgate.core import PubGate
+
         topo.stage_and_merge()
         approved_source = topo.work_dir.git.rev_parse("main")
-        current_source = topo.commit_internal({"next.txt": "next\n"}, "next staged feature")
+        for index in range(commit_count):
+            topo.commit_internal({f"next-{index}.txt": "next\n"}, f"next staged feature {index}")
+        current_source = topo.work_dir.git.rev_parse("main")
 
-        topo.pubgate.stage()
+        with caplog.at_level(logging.INFO, logger="pubgate"), patch.object(PubGate, "_handle_pr") as handle_pr:
+            topo.pubgate.stage()
 
         message = topo.work_dir.run("log", "-1", "--format=%B", topo.cfg.internal_stage_branch)
-        assert f"Included commits ({approved_source[:7]}..{current_source[:7]}):" in message
+        history_summary = (
+            f"Internal commits since previous approved snapshot: {commit_count} "
+            f"({approved_source[:7]}..{current_source[:7]})"
+        )
+        assert f"Staging filtered snapshot of main at {current_source[:7]}" in caplog.text
+        assert "Includes all eligible source files and configured auxiliary data" in caplog.text
+        assert history_summary in caplog.text
+        assert message.startswith(f"pubgate: filtered snapshot at {current_source[:7]}\n")
+        assert history_summary in message
         assert "next staged feature" in message
+        assert "No previous approved staging checkpoint" not in message
+        assert "Included commits" not in message
+        assert handle_pr.call_args.kwargs["title"] == message.split("\n", 1)[0]
+        assert handle_pr.call_args.kwargs["body"] == message.split("\n", 1)[1].strip()
 
     def test_rejects_source_unrelated_to_approved_source(self, topo: Topology):
         from unittest.mock import patch
@@ -352,7 +397,7 @@ class TestStageLogOnelineException:
         # Stage should still succeed
         files = topo.work_dir.list_files_at_ref(topo.cfg.internal_stage_branch)
         assert "v2.txt" in files
-        assert "Could not list staged commits" in caplog.text
+        assert "Could not list internal commits" in caplog.text
 
 
 class TestSnapshotUnreadableFile:

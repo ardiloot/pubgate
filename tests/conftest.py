@@ -235,9 +235,8 @@ class Topology:
 
     def publish(self, *, dry_run: bool = False, force: bool = False, no_pr: bool = False) -> None:
         self.pubgate.publish(
+            author="Public Test User <public-test@example.com>",
             message="Test public release",
-            author_name="Public Test User",
-            author_email="public-test@example.com",
             dry_run=dry_run,
             force=force,
             no_pr=no_pr,

@@ -283,12 +283,10 @@ class TestNoPrCLIFlag:
             [
                 "publish",
                 "--no-pr",
+                "--author",
+                "Release Bot <release@example.com>",
                 "--message",
                 "Release",
-                "--author-name",
-                "Release Bot",
-                "--author-email",
-                "release@example.com",
             ]
         )
         assert args.no_pr is True

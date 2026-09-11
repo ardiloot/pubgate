@@ -1,5 +1,5 @@
 import logging
-from collections.abc import Callable
+from collections.abc import Callable, Sequence
 from pathlib import Path
 
 from .absorb import AbsorbResult, absorb_commit_message, check_absorb, resolve_and_apply
@@ -15,7 +15,7 @@ from .errors import GitError, PubGateError
 from .git import GitRepo
 from .models import CommitInfo, format_commit
 from .pr import detect_provider
-from .publish import normalize_publish_metadata, resolve_publish_base
+from .publish import append_co_authors, normalize_publish_metadata, resolve_publish_base
 from .stage_snapshot import (
     apply_stage_snapshot,
     build_stage_snapshot,
@@ -260,33 +260,31 @@ class PubGate:
         previous_stage = StateRef.read(git, approved_ref, cfg.stage_state_file)
         previous_stage_sha = previous_stage.sha if previous_stage is not None else None
         if previous_stage_sha is None:
-            previous_stage_sha = git.find_commit_adding(cfg.internal_main_branch, cfg.absorb_state_file)
-
-        internal_commits = []
-        if previous_stage_sha is not None:
+            logger.info("Staging initial filtered snapshot of %s at %s", cfg.internal_main_branch, main_head[:7])
+            logger.info("No previous approved staging checkpoint")
+        else:
             if not git.is_ancestor(previous_stage_sha, main_head):
                 raise PubGateError(
                     f"Error: previous staged source {previous_stage_sha[:7]} is not an ancestor of "
                     f"{cfg.internal_main_branch} {main_head[:7]}. Reconcile the source branch history first."
                 )
+            logger.info("Staging filtered snapshot of %s at %s", cfg.internal_main_branch, main_head[:7])
+        logger.info("Includes all eligible source files and configured auxiliary data")
+
+        internal_commits = []
+        if previous_stage_sha is not None:
             try:
                 internal_commits = git.log_oneline(previous_stage_sha, main_head)
             except (GitError, PubGateError) as exc:
-                logger.warning("Could not list staged commits: %s", exc)
-            n = len(internal_commits)
-            if n:
+                logger.warning("Could not list internal commits: %s", exc)
+            if internal_commits:
                 logger.info(
-                    "Staging %d %s: %s..%s",
-                    n,
-                    "commit" if n == 1 else "commits",
+                    "Internal commits since previous approved snapshot: %d (%s..%s)",
+                    len(internal_commits),
                     previous_stage_sha[:7],
                     main_head[:7],
                 )
                 _log_commits(internal_commits)
-            else:
-                logger.info("Staging changes into %s", cfg.internal_approved_branch)
-        else:
-            logger.info("Staging changes into %s", cfg.internal_approved_branch)
 
         full_msg = stage_commit_message(main_head, previous_stage_sha, internal_commits)
 
@@ -445,16 +443,17 @@ class PubGate:
     def publish(
         self,
         *,
+        author: str,
         message: str,
-        author_name: str,
-        author_email: str,
+        co_authors: Sequence[str] = (),
         dry_run: bool = False,
         force: bool = False,
         no_pr: bool = False,
     ) -> None:
         cfg, git = self.cfg, self.git
         public_main = cfg.public_main_ref
-        message, author_name, author_email = normalize_publish_metadata(message, author_name, author_email)
+        author_name, author_email, message = normalize_publish_metadata(author, message)
+        message = append_co_authors(git, message, co_authors)
 
         self._publish_startup()
 
