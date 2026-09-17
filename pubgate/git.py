@@ -344,6 +344,17 @@ class GitRepo:
                 entries.append(CommitInfo(sha=parts[0], subject=parts[1], author=parts[2], date=date_str))
         return entries
 
+    def parse_trailers(self, message: str) -> list[str]:
+        result = self._run_bytes(
+            "-c",
+            "trailer.separators=:",
+            "interpret-trailers",
+            "--parse",
+            "--no-divider",
+            input_bytes=message.encode("utf-8"),
+        )
+        return result.stdout.decode("utf-8").splitlines()
+
     def find_commit_introducing(self, base: str, head: str, path: str, content: str) -> str | None:
         result = self._run(
             "log",

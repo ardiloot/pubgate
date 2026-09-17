@@ -127,11 +127,23 @@ def stage_commit_message(
     commits: list[CommitInfo],
 ) -> str:
     subject = f"pubgate: filtered snapshot at {main_head[:7]}"
-    if previous_stage_sha is None or not commits:
-        return subject
+    if previous_stage_sha is None:
+        subject = f"pubgate: stage initial filtered snapshot at {main_head[:7]}"
     lines = [subject, ""]
-    lines.append(f"Included commits ({previous_stage_sha[:7]}..{main_head[:7]}):")
-    lines.extend(f"  {i}. {format_commit(c)}" for i, c in enumerate(commits, 1))
+    if previous_stage_sha is not None:
+        lines.append(f"Previous approved source: {previous_stage_sha[:7]}.")
+    lines.append("Includes all eligible source files and configured auxiliary data.")
+    if previous_stage_sha is None:
+        lines.append("No previous approved staging checkpoint exists.")
+    if previous_stage_sha is not None and commits:
+        lines.extend(
+            [
+                "",
+                f"Internal commits since previous approved snapshot: {len(commits)} "
+                f"({previous_stage_sha[:7]}..{main_head[:7]})",
+            ]
+        )
+        lines.extend(f"  {index}. {format_commit(commit)}" for index, commit in enumerate(commits, 1))
     return "\n".join(lines)
 
 

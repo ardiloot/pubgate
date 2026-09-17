@@ -190,26 +190,48 @@ class TestRepoDirFlag:
         args = build_parser().parse_args(["preview"])
         assert args.output is None
 
-    def test_publish_metadata_flags(self):
+    @pytest.mark.parametrize("co_authors", [[], ["Alice Public <alice@example.com>", "Bob Public <bob@example.com>"]])
+    def test_publish_metadata_flags(self, co_authors: list[str]):
         message = "Release codec 1.0\n\nCo-authored-by: Alice Public <alice@example.com>"
-        args = build_parser().parse_args(
-            [
-                "publish",
-                "--message",
-                message,
-                "--author-name",
-                "Release Bot",
-                "--author-email",
-                "release@example.com",
-            ]
-        )
+        arguments = ["publish", "--author", "Release Bot <release@example.com>", "--message", message]
+        for co_author in co_authors:
+            arguments.extend(["--co-author", co_author])
+        args = build_parser().parse_args(arguments)
+        assert args.author == "Release Bot <release@example.com>"
         assert args.message == message
-        assert args.author_name == "Release Bot"
-        assert args.author_email == "release@example.com"
+        assert args.co_authors == co_authors
 
-    def test_publish_requires_public_metadata(self):
+    def test_publish_help_orders_metadata_options(self, capsys):
+        with pytest.raises(SystemExit) as exc:
+            build_parser().parse_args(["publish", "--help"])
+        assert exc.value.code == 0
+        output = capsys.readouterr().out
+        assert output.index("--author") < output.index("--message") < output.index("--co-author")
+
+    @pytest.mark.parametrize(
+        "arguments",
+        [[], ["--message", "Release"], ["--author", "Release Bot <release@example.com>"]],
+    )
+    def test_publish_requires_public_metadata(self, arguments: list[str]):
         with pytest.raises(SystemExit):
-            build_parser().parse_args(["publish"])
+            build_parser().parse_args(["publish", "--dry-run", *arguments])
+
+    def test_publish_rejects_legacy_metadata_flags(self, capsys):
+        with pytest.raises(SystemExit):
+            build_parser().parse_args(
+                [
+                    "publish",
+                    "--author",
+                    "Release Bot <release@example.com>",
+                    "--message",
+                    "Release",
+                    "--author-name",
+                    "Release Bot",
+                    "--author-email",
+                    "release@example.com",
+                ]
+            )
+        assert "unrecognized arguments" in capsys.readouterr().err
 
     def test_preview_skips_public_remote_setup(self, tmp_path: Path):
         (tmp_path / "pubgate.toml").write_text('public_url = "https://example.com/public.git"\n', encoding="utf-8")
@@ -240,7 +262,8 @@ class TestRepoDirFlag:
             force=False,
         )
 
-    def test_publish_routes_metadata(self, tmp_path: Path):
+    @pytest.mark.parametrize("dry_run", [False, True])
+    def test_publish_routes_metadata(self, tmp_path: Path, dry_run: bool):
         (tmp_path / "pubgate.toml").write_text('public_url = "https://example.com/public.git"\n', encoding="utf-8")
 
         with (
@@ -253,22 +276,25 @@ class TestRepoDirFlag:
                     "--repo-dir",
                     str(tmp_path),
                     "publish",
+                    "--author",
+                    "Release Bot <release@example.com>",
                     "--message",
                     "Release codec 1.0\n\nCo-authored-by: Alice Public <alice@example.com>",
-                    "--author-name",
-                    "Release Bot",
-                    "--author-email",
-                    "release@example.com",
+                    "--co-author",
+                    "Alice Public <alice@example.com>",
+                    "--co-author",
+                    "Bob Public <bob@example.com>",
+                    *(["--dry-run"] if dry_run else []),
                 ]
             )
 
         publish.assert_called_once_with(
-            dry_run=False,
+            author="Release Bot <release@example.com>",
+            message="Release codec 1.0\n\nCo-authored-by: Alice Public <alice@example.com>",
+            co_authors=["Alice Public <alice@example.com>", "Bob Public <bob@example.com>"],
+            dry_run=dry_run,
             force=False,
             no_pr=False,
-            message="Release codec 1.0\n\nCo-authored-by: Alice Public <alice@example.com>",
-            author_name="Release Bot",
-            author_email="release@example.com",
         )
 
 

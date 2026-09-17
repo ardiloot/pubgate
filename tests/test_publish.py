@@ -1,40 +1,113 @@
 import logging
+from pathlib import Path
 from unittest.mock import patch
 
 import pytest
 from conftest import SAMPLE_PNG, Topology
 
 from pubgate.errors import PubGateError
-from pubgate.publish import normalize_publish_metadata
+from pubgate.git import GitRepo
+from pubgate.publish import append_co_authors, normalize_publish_metadata
 
 
 class TestPublishMessage:
     def test_normalizes_public_metadata(self):
-        message, name, email = normalize_publish_metadata(
+        name, email, message = normalize_publish_metadata(
+            " Release Bot <release@example.com> ",
             "Release codec 1.0\n\nRelease notes\n\n"
             "Co-authored-by: Alice Public <alice@example.com>\n"
             "Co-authored-by: Bob Public <bob@example.com>",
-            " Release Bot ",
-            " release@example.com ",
         )
 
         assert message.startswith("Release codec 1.0\n")
         assert name == "Release Bot"
         assert email == "release@example.com"
 
+    @pytest.mark.parametrize("message", ["", " \r\n\t ", "Release\x00notes"])
+    def test_rejects_invalid_public_message(self, message: str):
+        with pytest.raises(PubGateError):
+            normalize_publish_metadata("Release Bot <release@example.com>", message)
+
+    @pytest.mark.parametrize("role", ["author", "co-author"])
     @pytest.mark.parametrize(
-        ("message", "name", "email"),
+        "identity",
         [
-            ("", "Release Bot", "release@example.com"),
-            ("Release", "", "release@example.com"),
-            ("Release", "Internal\nUser", "release@example.com"),
-            ("Release", "Release Bot", "  "),
-            ("Release", "Release Bot", "not-an-email"),
+            "",
+            "Release Bot",
+            "release@example.com",
+            "<release@example.com>",
+            "Release Bot <not-an-email>",
+            "Release Bot <>",
+            'Release Bot <"first last"@example.com>',
+            'Release Bot <"first>last"@example.com>',
+            'Release Bot <"first<last"@example.com>',
+            "Release Bot <release@example.com> trailing text",
+            "Release Bot <release@example.com>, Other <other@example.com>",
+            "Team: Release Bot <release@example.com>;",
+            "Internal\nUser <release@example.com>",
+            "Release Bot <release@example.com>\r\nCo-authored-by: Other <other@example.com>",
+            "Release\x00Bot <release@example.com>",
+            "=?utf-8?q?Release=0ABot?= <release@example.com>",
         ],
     )
-    def test_rejects_invalid_public_metadata(self, message: str, name: str, email: str):
-        with pytest.raises(PubGateError):
-            normalize_publish_metadata(message, name, email)
+    def test_rejects_invalid_public_identity(self, tmp_path: Path, role: str, identity: str):
+        with pytest.raises(PubGateError, match=f"public {role}"):
+            if role == "author":
+                normalize_publish_metadata(identity, "Release")
+            else:
+                append_co_authors(GitRepo(tmp_path), "Release", [identity])
+
+    def test_accepts_quoted_display_name(self):
+        name, email, message = normalize_publish_metadata('"Public, Alice" <alice@example.com>', "Release")
+        assert (name, email, message) == ("Public, Alice", "alice@example.com", "Release")
+
+    def test_normalizes_unnecessary_mailbox_quotes(self):
+        name, email, message = normalize_publish_metadata('Release Bot <"release"@example.com>', "Release")
+        assert (name, email, message) == ("Release Bot", "release@example.com", "Release")
+
+    @pytest.mark.parametrize("message", ["Release", "Release\n\nRelease notes"])
+    def test_appends_co_authors_with_blank_line(self, tmp_path: Path, message: str):
+        result = append_co_authors(
+            GitRepo(tmp_path),
+            message,
+            ["Alice Public <alice@example.com>", "Bob Public <bob@example.com>", "Alice Public <alice@example.com>"],
+        )
+        assert result == (
+            message + "\n\nCo-authored-by: Alice Public <alice@example.com>\n"
+            "Co-authored-by: Bob Public <bob@example.com>"
+        )
+
+    def test_preserves_existing_trailers_without_duplicates(self, tmp_path: Path):
+        message = (
+            "Release\n\nRelease notes\n\nco-authored-by: Alice Public <alice@example.com>\n"
+            "Signed-off-by: Reviewer <reviewer@example.com>"
+        )
+        result = append_co_authors(
+            GitRepo(tmp_path), message, ["Alice Public <alice@example.com>", "Bob Public <bob@example.com>"]
+        )
+        assert result == message + "\nCo-authored-by: Bob Public <bob@example.com>"
+
+    def test_does_not_treat_body_text_as_a_trailer(self, tmp_path: Path):
+        message = "Release\n\nCo-authored-by: Alice Public <alice@example.com>\n\nRelease notes continue here."
+        result = append_co_authors(GitRepo(tmp_path), message, ["Alice Public <alice@example.com>"])
+        assert result == message + "\n\nCo-authored-by: Alice Public <alice@example.com>"
+
+    def test_duplicate_trailer_leaves_message_unchanged(self, tmp_path: Path):
+        message = "Release\n\nCo-authored-by: Alice Public <alice@example.com>"
+        assert append_co_authors(GitRepo(tmp_path), message, ["Alice Public <alice@example.com>"]) == message
+
+    def test_preserves_utf8_trailer_identities(self, tmp_path: Path):
+        message = "Release \u4e00\n\nCo-authored-by: Jos\u00e9 Public <jose@example.com>"
+        result = append_co_authors(
+            GitRepo(tmp_path), message, ["Jos\u00e9 Public <jose@example.com>", "Li \u660e <li@example.com>"]
+        )
+        assert result == message + "\nCo-authored-by: Li \u660e <li@example.com>"
+
+    def test_no_co_authors_leaves_message_unchanged(self, tmp_path: Path):
+        message = "Release\n\nCo-authored-by: Alice Public <alice@example.com>"
+        with patch.object(GitRepo, "parse_trailers") as parse_trailers:
+            assert append_co_authors(GitRepo(tmp_path), message, []) == message
+        parse_trailers.assert_not_called()
 
 
 class TestPublishBasic:
@@ -66,19 +139,15 @@ class TestPublishBasic:
         pg = topo.pubgate
         with patch.object(PubGate, "_handle_pr") as handle_pr:
             pg.publish(
-                message=(
-                    "Release codec 1.0\n\n"
-                    "Co-authored-by: Alice Public <alice@example.com>\n"
-                    "Co-authored-by: Bob Public <bob@example.com>"
-                ),
-                author_name="Release Bot",
-                author_email="release@example.com",
+                author="Release Bot <release@example.com>",
+                message=("Release codec 1.0\n\nCo-authored-by: Alice Public <alice@example.com>"),
+                co_authors=["Alice Public <alice@example.com>", "Bob Public <bob@example.com>"],
             )
 
         message = topo.work_dir.run("log", "-1", "--format=%B", topo.cfg.public_publish_branch)
         assert message.startswith("Release codec 1.0\n")
-        assert "Co-authored-by: Alice Public <alice@example.com>" in message
-        assert "Co-authored-by: Bob Public <bob@example.com>" in message
+        assert message.count("Co-authored-by: Alice Public <alice@example.com>") == 1
+        assert message.count("Co-authored-by: Bob Public <bob@example.com>") == 1
         identity = topo.work_dir.run(
             "log",
             "-1",
@@ -118,17 +187,41 @@ class TestPublishGuards:
 
 
 class TestPublishDryRun:
+    @pytest.mark.parametrize(
+        ("author", "co_authors"),
+        [
+            ("Invalid", []),
+            ("Release Bot <release@example.com>", ["Invalid"]),
+            ('Release Bot <"first last"@example.com>', []),
+            ("Release Bot <release@example.com>", ['Alice Public <"first last"@example.com>']),
+        ],
+    )
+    def test_invalid_metadata_rejected_before_startup(self, tmp_path: Path, author: str, co_authors: list[str]):
+        from pubgate.config import Config
+        from pubgate.core import PubGate
+
+        with patch.object(PubGate, "_publish_startup") as startup:
+            with pytest.raises(PubGateError):
+                PubGate(Config(), GitRepo(tmp_path)).publish(
+                    author=author, message="Release", co_authors=co_authors, dry_run=True
+                )
+        startup.assert_not_called()
+
     def test_dry_run_previews_without_pushing(self, topo: Topology, caplog):
         topo.stage_and_merge()
         with caplog.at_level(logging.INFO, logger="pubgate"):
-            topo.publish(dry_run=True)
+            topo.pubgate.publish(
+                author="Release Bot <release@example.com>",
+                message="Release",
+                co_authors=["Alice Public <alice@example.com>", "Bob Public <bob@example.com>"],
+                dry_run=True,
+            )
         assert "[dry-run] Would commit on" in caplog.text
         assert "[dry-run] Would push" in caplog.text
         assert "Next steps" in caplog.text
 
-        topo.work_dir.run("fetch", "public-remote")
-        result = topo.work_dir.run("branch", "-r").strip()
-        assert "public-remote/sync-to-public" not in result
+        assert not topo.work_dir.git.branch_exists(topo.cfg.public_publish_branch)
+        assert not topo.public_server.branch_exists(topo.cfg.public_publish_branch)
 
 
 class TestPublishFullCycle:
