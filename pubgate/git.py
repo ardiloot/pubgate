@@ -1,7 +1,7 @@
 import logging
 import os
 import subprocess
-from collections.abc import Iterator, Mapping
+from collections.abc import Generator, Mapping
 from contextlib import contextmanager
 from dataclasses import dataclass
 from pathlib import Path
@@ -273,7 +273,7 @@ class GitRepo:
         self._run("checkout", "--orphan", branch)
 
     @contextmanager
-    def on_branch(self, branch: str) -> Iterator[None]:
+    def on_branch(self, branch: str) -> Generator[None]:
         original = self.current_branch()
         if original == "HEAD":
             raise PubGateError("Error: cannot run on a detached HEAD. Check out a branch first.")

@@ -322,7 +322,7 @@ class TestMalformedToml:
         if sys.version_info >= (3, 11):
             import tomllib
         else:
-            import tomli as tomllib  # ty: ignore[unresolved-import]
+            import tomli as tomllib  # ty: ignore[import-not-found]
         (tmp_path / "pubgate.toml").write_text("key =\n", encoding="utf-8")
 
         with pytest.raises((PubGateError, tomllib.TOMLDecodeError)):
